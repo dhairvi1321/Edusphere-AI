@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="EduSphere AI helps students manage subjects, syllabus, assignments, exams and personalized AI-powered study plans in one intelligent student platform." />
+  <meta name="keywords" content="EduSphere AI, student planner, AI study plan, academic management, college productivity" />
+  <meta name="author" content="EduSphere AI" />
+  <title>EduSphere AI | Intelligent Student Life Operating System</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===== NAVBAR ===== -->
+  <header class="navbar" id="navbar">
+    <div class="nav-container">
+      <a href="#" class="nav-logo" aria-label="EduSphere AI Home">
+        <span class="logo-icon" aria-hidden="true">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="16" cy="16" r="15" fill="url(#logoGrad)" />
+            <path d="M10 16 L16 10 L22 16 L16 22 Z" fill="white" opacity="0.9"/>
+            <circle cx="16" cy="16" r="3" fill="white"/>
+            <defs>
+              <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#4F46E5"/>
+                <stop offset="100%" stop-color="#7C3AED"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </span>
+        <span class="logo-text">EduSphere AI</span>
+      </a>
+
+      <nav class="nav-links" id="navLinks" aria-label="Main navigation">
+        <a href="#home">Home</a>
+        <a href="#features">Features</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#ai-planner">AI Planner</a>
+        <a href="#about">About</a>
+      </nav>
+
+      <div class="nav-actions" id="navActions">
+        <a href="login.html" class="btn btn-ghost" aria-label="Login">Login</a>
+        <a href="signup.html" class="btn btn-primary" aria-label="Get Started">Get Started</a>
+      </div>
+
+      <button class="hamburger" id="hamburger" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="navLinks">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ===== HERO SECTION ===== -->
+    <section class="hero" id="home" aria-labelledby="hero-heading">
+      <canvas id="hero-canvas" aria-hidden="true"></canvas>
+      <div class="hero-container">
+        <div class="hero-content">
+          <span class="hero-badge" aria-label="Product category">✦ AI-Powered Student Life OS</span>
+          <h1 id="hero-heading">Your Student Life,<br /><span class="gradient-text">Smarter with AI.</span></h1>
+          <p class="hero-sub">EduSphere AI helps you organize subjects, syllabus, assignments, exams and deadlines — while creating personalized study plans based on your goals and available time.</p>
+          <div class="hero-cta">
+            <a href="#" class="btn btn-primary btn-lg" aria-label="Get Started with EduSphere AI">Get Started</a>
+            <a href="#features" class="btn btn-outline btn-lg" aria-label="Explore Features">Explore Features</a>
+          </div>
+          <p class="hero-note">Free for students · No credit card required</p>
+        </div>
+
+        <!-- Dashboard Mockup -->
+        <div class="hero-visual" aria-label="EduSphere AI dashboard preview" role="img">
+          <div class="mockup-card mockup-main">
+            <div class="mockup-header">
+              <div class="mockup-dots">
+                <span></span><span></span><span></span>
+              </div>
+              <span class="mockup-title">EduSphere Dashboard</span>
+            </div>
+            <div class="mockup-body">
+              <!-- Today's Progress -->
+              <div class="mockup-widget">
+                <div class="widget-label">Today's Progress</div>
+                <div class="progress-bar-wrap">
+                  <div class="progress-bar" style="width: 68%"></div>
+                </div>
+                <div class="widget-meta">68% complete · 3 tasks left</div>
+              </div>
+              <!-- Stats Row -->
+              <div class="mockup-stats">
+                <div class="stat-chip">
+                  <span class="stat-num">5</span>
+                  <span class="stat-lbl">Subjects</span>
+                </div>
+                <div class="stat-chip accent">
+                  <span class="stat-num">3</span>
+                  <span class="stat-lbl">Due Today</span>
+                </div>
+                <div class="stat-chip green">
+                  <span class="stat-num">12</span>
+                  <span class="stat-lbl">Completed</span>
+                </div>
+              </div>
+              <!-- Upcoming Exam -->
+              <div class="mockup-widget exam-widget">
+                <div class="exam-icon" aria-hidden="true">📅</div>
+                <div>
+                  <div class="widget-label">Upcoming Exam</div>
+                  <div class="exam-name">Data Structures — in 3 days</div>
+                </div>
+                <span class="exam-badge">Soon</span>
+              </div>
+              <!-- AI Plan Preview -->
+              <div class="mockup-widget ai-widget">
+                <div class="ai-tag">✦ AI Plan</div>
+                <div class="ai-tasks">
+                  <div class="ai-task">
+                    <span class="ai-time">09:00</span>
+                    <span class="ai-subject">Data Structures</span>
+                    <span class="ai-dur">45m</span>
+                  </div>
+                  <div class="ai-task">
+                    <span class="ai-time">11:00</span>
+                    <span class="ai-subject">DBMS</span>
+                    <span class="ai-dur">40m</span>
+                  </div>
+                  <div class="ai-task">
+                    <span class="ai-time">05:00</span>
+                    <span class="ai-subject">Java OOP</span>
+                    <span class="ai-dur">50m</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TRUST STRIP ===== -->
+    <section class="trust-strip" aria-label="Key value propositions">
+      <div class="container">
+        <div class="trust-grid">
+          <div class="trust-item">
+            <span class="trust-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 10h16M4 14h10" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/></svg>
+            </span>
+            <span>Organize Everything</span>
+          </div>
+          <div class="trust-item">
+            <span class="trust-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M9 19V6l12-3v13M9 19c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm12 0c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2z" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span>Plan Smarter</span>
+          </div>
+          <div class="trust-item">
+            <span class="trust-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M18 20V10M12 20V4M6 20v-6" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/></svg>
+            </span>
+            <span>Track Progress</span>
+          </div>
+          <div class="trust-item">
+            <span class="trust-icon" aria-hidden="true">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#22d3ee" stroke-width="2"/><path d="M12 8v4l3 3" stroke="#22d3ee" stroke-width="2" stroke-linecap="round"/></svg>
+            </span>
+            <span>Study with AI</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== FEATURES SECTION ===== -->
+    <section class="features" id="features" aria-labelledby="features-heading">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Features</span>
+          <h2 id="features-heading">Everything You Need to Stay Ahead</h2>
+          <p>EduSphere brings all your academic planning into one intelligent workspace — so you spend less time organizing and more time learning.</p>
+        </div>
+        <div class="features-grid">
+
+          <article class="feature-card" aria-label="Smart Dashboard feature">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1" stroke="#818cf8" stroke-width="2"/><rect x="14" y="3" width="7" height="7" rx="1" stroke="#818cf8" stroke-width="2"/><rect x="3" y="14" width="7" height="7" rx="1" stroke="#818cf8" stroke-width="2"/><rect x="14" y="14" width="7" height="7" rx="1" stroke="#818cf8" stroke-width="2"/></svg>
+            </div>
+            <h3>Smart Dashboard</h3>
+            <p>Get a clear overview of your academic workload, progress and upcoming deadlines at a glance.</p>
+          </article>
+
+          <article class="feature-card" aria-label="Subject and Syllabus Management feature">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke="#818cf8" stroke-width="2"/></svg>
+            </div>
+            <h3>Subject &amp; Syllabus Management</h3>
+            <p>Organize subjects, units and topics in one structured workspace — always know what's covered and what's left.</p>
+          </article>
+
+          <article class="feature-card" aria-label="Assignment and Exam Tracking feature">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" stroke="#818cf8" stroke-width="2"/><path d="M16 2v4M8 2v4M3 10h18" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <h3>Assignment &amp; Exam Tracking</h3>
+            <p>Never lose track of an assignment or important exam again. Deadlines are always visible and prioritized.</p>
+          </article>
+
+          <article class="feature-card" aria-label="Progress Tracking feature">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M18 20V10M12 20V4M6 20v-6" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <h3>Progress Tracking</h3>
+            <p>Understand exactly how much of your syllabus you have completed and what still needs attention.</p>
+          </article>
+
+          <article class="feature-card feature-card--highlight" aria-label="AI Study Planner feature">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="white" stroke-width="2"/><path d="M12 8v4l3 3" stroke="white" stroke-width="2" stroke-linecap="round"/><path d="M9 3.5A9 9 0 0 1 21 12" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.5"/></svg>
+            </div>
+            <h3>AI Study Planner</h3>
+            <p>Generate personalized study schedules based on your subjects, deadlines and available time — powered by AI.</p>
+          </article>
+
+          <article class="feature-card" aria-label="Personalized Student Experience feature">
+            <div class="feature-icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="#818cf8" stroke-width="2"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <h3>Personalized Student Experience</h3>
+            <p>Build a study system around your own academic goals, routine and learning style.</p>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== HOW IT WORKS ===== -->
+    <section class="how-it-works" id="how-it-works" aria-labelledby="hiw-heading">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Process</span>
+          <h2 id="hiw-heading">From Overwhelmed to Organized</h2>
+          <p>Getting started with EduSphere takes minutes. Here's how it works.</p>
+        </div>
+        <div class="steps-grid">
+
+          <div class="step-card">
+            <div class="step-number" aria-hidden="true">01</div>
+            <div class="step-icon" aria-hidden="true">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="#818cf8" stroke-width="2"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <h3>Create Your Profile</h3>
+            <p>Tell EduSphere about yourself, your college, semester and academic goals.</p>
+          </div>
+
+          <div class="step-connector" aria-hidden="true"></div>
+
+          <div class="step-card">
+            <div class="step-number" aria-hidden="true">02</div>
+            <div class="step-icon" aria-hidden="true">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke="#818cf8" stroke-width="2"/></svg>
+            </div>
+            <h3>Add Your Academic Data</h3>
+            <p>Add subjects, syllabus topics, assignments and upcoming exams to your workspace.</p>
+          </div>
+
+          <div class="step-connector" aria-hidden="true"></div>
+
+          <div class="step-card">
+            <div class="step-number" aria-hidden="true">03</div>
+            <div class="step-icon" aria-hidden="true">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#818cf8" stroke-width="2"/><path d="M12 8v4l3 3" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <h3>Tell Us Your Available Time</h3>
+            <p>Enter how many hours you can realistically study each day or week.</p>
+          </div>
+
+          <div class="step-connector" aria-hidden="true"></div>
+
+          <div class="step-card step-card--accent">
+            <div class="step-number" aria-hidden="true">04</div>
+            <div class="step-icon" aria-hidden="true">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="white" stroke-width="2"/><path d="M9 3.5A9 9 0 0 1 21 12" stroke="white" stroke-width="2" stroke-linecap="round" opacity="0.6"/><path d="M12 8v4l3 3" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+            <h3>Generate Your AI Study Plan</h3>
+            <p>EduSphere creates a personalized schedule designed around your priorities and deadlines.</p>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== AI PLANNER SECTION ===== -->
+    <section class="ai-planner" id="ai-planner" aria-labelledby="ai-heading">
+      <div class="container">
+        <div class="ai-planner-inner">
+          <div class="ai-planner-content">
+            <span class="section-tag">AI Planner</span>
+            <h2 id="ai-heading">Meet Your AI Study Planner</h2>
+            <p>Stop wondering what to study next. EduSphere analyzes your subjects, syllabus, deadlines, exams and available study time to create a personalized study schedule — every single day.</p>
+            <ul class="ai-benefits" aria-label="AI Planner benefits">
+              <li>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#6366f1"/><path d="M8 12l3 3 5-5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Adapts to your exam schedule
+              </li>
+              <li>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#6366f1"/><path d="M8 12l3 3 5-5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Prioritizes high-weight subjects
+              </li>
+              <li>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#6366f1"/><path d="M8 12l3 3 5-5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Fits your available time slots
+              </li>
+              <li>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#6366f1"/><path d="M8 12l3 3 5-5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Updates as deadlines change
+              </li>
+            </ul>
+            <a href="#" class="btn btn-primary btn-lg" aria-label="Explore AI Planner">Explore AI Planner</a>
+          </div>
+
+          <!-- AI Plan Card Visual -->
+          <div class="ai-plan-card" aria-label="Sample AI generated study plan" role="img">
+            <div class="ai-plan-header">
+              <div>
+                <div class="ai-plan-title">Today's AI Plan</div>
+                <div class="ai-plan-date">Monday, 13 Jan 2026</div>
+              </div>
+              <span class="ai-badge" aria-hidden="true">✦ AI</span>
+            </div>
+            <div class="ai-plan-sessions">
+              <div class="ai-session">
+                <div class="session-time">09:00 AM</div>
+                <div class="session-info">
+                  <div class="session-subject">Data Structures</div>
+                  <div class="session-topic">Trees &amp; Traversals</div>
+                </div>
+                <div class="session-dur">45 min</div>
+              </div>
+              <div class="ai-session">
+                <div class="session-time">11:00 AM</div>
+                <div class="session-info">
+                  <div class="session-subject">DBMS</div>
+                  <div class="session-topic">Normalization</div>
+                </div>
+                <div class="session-dur">40 min</div>
+              </div>
+              <div class="ai-session">
+                <div class="session-time">05:00 PM</div>
+                <div class="session-info">
+                  <div class="session-subject">Java</div>
+                  <div class="session-topic">OOP Revision</div>
+                </div>
+                <div class="session-dur">50 min</div>
+              </div>
+            </div>
+            <div class="ai-plan-footer">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="#818cf8" stroke-width="2"/><path d="M12 8v4l3 3" stroke="#818cf8" stroke-width="2" stroke-linecap="round"/></svg>
+              Generated by EduSphere AI
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== STUDENT PROBLEM SECTION ===== -->
+    <section class="problems" id="about" aria-labelledby="problems-heading">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Why EduSphere</span>
+          <h2 id="problems-heading">College Life Shouldn't Feel This Complicated</h2>
+          <p>Every student faces these challenges. EduSphere was built to solve them.</p>
+        </div>
+        <div class="problems-grid">
+          <div class="problem-card">
+            <span class="problem-icon" aria-hidden="true">⏰</span>
+            <h3>Too Many Deadlines</h3>
+            <p>Assignments, exams and projects pile up with no clear system to manage them.</p>
+          </div>
+          <div class="problem-card">
+            <span class="problem-icon" aria-hidden="true">📂</span>
+            <h3>Scattered Notes &amp; Syllabus</h3>
+            <p>Syllabus across different apps, notebooks and drives — nothing is in one place.</p>
+          </div>
+          <div class="problem-card">
+            <span class="problem-icon" aria-hidden="true">🤔</span>
+            <h3>Difficult to Prioritize</h3>
+            <p>Not knowing which subject needs the most attention leads to last-minute cramming.</p>
+          </div>
+          <div class="problem-card">
+            <span class="problem-icon" aria-hidden="true">📉</span>
+            <h3>No Clear Study Routine</h3>
+            <p>Without a structured plan, study sessions are inconsistent and unproductive.</p>
+          </div>
+        </div>
+        <div class="solution-bridge" aria-label="EduSphere solution statement">
+          <div class="bridge-arrow" aria-hidden="true">↓</div>
+          <div class="bridge-text">
+            <span class="gradient-text">EduSphere AI brings everything together.</span>
+            <p>One platform. All your academics. Powered by AI.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== BENEFITS SECTION ===== -->
+    <section class="benefits" aria-labelledby="benefits-heading">
+      <div class="container">
+        <div class="benefits-inner">
+          <div class="benefits-content">
+            <span class="section-tag">Benefits</span>
+            <h2 id="benefits-heading">Built for Students Who Want to Do Better</h2>
+            <p>EduSphere gives you the tools and intelligence to take control of your academic life.</p>
+          </div>
+          <ul class="benefits-list" aria-label="List of EduSphere benefits">
+            <li>
+              <span class="benefit-check" aria-hidden="true">✓</span>
+              One place for all academic planning
+            </li>
+            <li>
+              <span class="benefit-check" aria-hidden="true">✓</span>
+              Personalized AI study schedules
+            </li>
+            <li>
+              <span class="benefit-check" aria-hidden="true">✓</span>
+              Better deadline management
+            </li>
+            <li>
+              <span class="benefit-check" aria-hidden="true">✓</span>
+              Clear academic progress tracking
+            </li>
+            <li>
+              <span class="benefit-check" aria-hidden="true">✓</span>
+              Smarter study decisions
+            </li>
+            <li>
+              <span class="benefit-check" aria-hidden="true">✓</span>
+              Less planning, more studying
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== FINAL CTA SECTION ===== -->
+    <section class="final-cta" aria-labelledby="cta-heading">
+      <div class="container">
+        <div class="cta-inner">
+          <h2 id="cta-heading">Ready to Make Your Student Life Smarter?</h2>
+          <p>Organize your academics. Plan your time. Let AI help you study smarter.</p>
+          <a href="#" class="btn btn-white btn-lg" aria-label="Get Started with EduSphere AI">Get Started with EduSphere AI</a>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="footer" aria-label="Site footer">
+    <div class="container">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <a href="#" class="nav-logo" aria-label="EduSphere AI">
+            <span class="logo-icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="15" fill="url(#footerLogoGrad)"/><path d="M10 16 L16 10 L22 16 L16 22 Z" fill="white" opacity="0.9"/><circle cx="16" cy="16" r="3" fill="white"/><defs><linearGradient id="footerLogoGrad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#4F46E5"/><stop offset="100%" stop-color="#7C3AED"/></linearGradient></defs></svg>
+            </span>
+            <span class="logo-text">EduSphere AI</span>
+          </a>
+          <p>Your intelligent student life operating system.</p>
+        </div>
+        <nav class="footer-links" aria-label="Footer navigation">
+          <a href="#home">Home</a>
+          <a href="#features">Features</a>
+          <a href="#how-it-works">How It Works</a>
+          <a href="#ai-planner">AI Planner</a>
+          <a href="#about">About</a>
+        </nav>
+      </div>
+      <div class="footer-bottom">
+        <p>© 2026 EduSphere AI. All rights reserved.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="main.js"></script>
+  <script src="auth.js"></script>
+  <script>
+    (function() {
+      const session = Auth.getSession();
+      const navActions = document.getElementById('navActions');
+      if (session) {
+        navActions.innerHTML = `
+          <span class="nav-user-name">Hi, ${session.name.split(' ')[0]}</span>
+          <a href="dashboard.html" class="btn btn-ghost">Dashboard</a>
+          <button class="btn btn-primary" onclick="Auth.logout()">Logout</button>
+        `;
+      }
+    })();
+  </script>
+</body>
+</html>
