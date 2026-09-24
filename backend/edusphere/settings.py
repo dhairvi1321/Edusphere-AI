@@ -96,3 +96,6 @@ SIMPLE_JWT = {
 
 # CORS — allow frontend dev server
 CORS_ALLOW_ALL_ORIGINS = True
+
+# Google OAuth
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
