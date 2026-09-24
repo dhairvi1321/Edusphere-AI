@@ -1,0 +1,19 @@
+Watching for file changes with StatReloader
+Performing system checks...
+
+System check identified no issues (0 silenced).
+September 25, 2026 - 02:42:04
+Django version 4.2.30, using settings 'edusphere.settings'
+Starting development server at http://127.0.0.1:8000/
+Quit the server with CTRL-BREAK.
+
+C:\Users\dhair\OneDrive\Desktop\Edusphere-AI\backend\accounts\views.py changed, reloading.
+Watching for file changes with StatReloader
+Performing system checks...
+
+System check identified no issues (0 silenced).
+September 25, 2026 - 02:56:39
+Django version 4.2.30, using settings 'edusphere.settings'
+Starting development server at http://127.0.0.1:8000/
+Quit the server with CTRL-BREAK.
+
