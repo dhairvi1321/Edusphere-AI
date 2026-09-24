@@ -5,7 +5,7 @@ from .models import Subject, SyllabusTopic, Assignment, Exam
 class SyllabusTopicSerializer(serializers.ModelSerializer):
     class Meta:
         model = SyllabusTopic
-        fields = ('id', 'title', 'is_completed')
+        fields = ('id', 'subject', 'title', 'is_completed')
 
 
 class SubjectSerializer(serializers.ModelSerializer):
