@@ -99,15 +99,27 @@ const Auth = {
 
   async apiFetch(path, options = {}) {
     const token = this.getToken();
-    const res = await fetch(`${API}${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(options.headers || {})
+    try {
+      const res = await fetch(`${API}${path}`, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(options.headers || {})
+        }
+      });
+      if (res.status === 401) { this.logout(); return null; }
+      if (res.status === 204) return {};
+      if (!res.ok) {
+        let errBody = null;
+        try { errBody = await res.json(); } catch { /* no body */ }
+        console.error(`API ${options.method || 'GET'} ${path} → ${res.status}`, errBody);
+        return null;
       }
-    });
-    if (res.status === 401) { this.logout(); return null; }
-    return res.ok ? res.json() : null;
+      return res.json();
+    } catch (err) {
+      console.error(`apiFetch network error on ${path}:`, err);
+      return null;
+    }
   }
 };

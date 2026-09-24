@@ -314,15 +314,14 @@ function openEditSubject(id) {
 document.getElementById('subjectForm').addEventListener('submit', async e => {
   e.preventDefault();
   const id = document.getElementById('subjectId').value;
-  const body = {
-    name: document.getElementById('subjectName').value.trim(),
-    description: document.getElementById('subjectDesc').value.trim()
-  };
+  const name = document.getElementById('subjectName').value.trim();
+  if (!name) return;
+  const body = { name, description: document.getElementById('subjectDesc').value.trim() };
   const res = id
     ? await Auth.apiFetch(`/academics/subjects/${id}/`, { method: 'PUT', body: JSON.stringify(body) })
     : await Auth.apiFetch('/academics/subjects/', { method: 'POST', body: JSON.stringify(body) });
-  if (res) { closeModal('subjectModal'); showToast(id ? 'Subject updated!' : 'Subject added!'); await loadAll(); }
-  else showToast('Something went wrong.', 'error');
+  if (res !== null) { closeModal('subjectModal'); showToast(id ? 'Subject updated!' : 'Subject added!'); await loadAll(); }
+  else showToast('Something went wrong. Check the browser console for details.', 'error');
 });
 
 async function deleteSubject(id) {
