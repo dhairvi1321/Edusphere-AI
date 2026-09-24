@@ -71,6 +71,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    'UNAUTHENTICATED_USER': None,
 }
 
 # CORS — allow frontend dev server

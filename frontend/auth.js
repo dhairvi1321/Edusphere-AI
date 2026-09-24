@@ -108,7 +108,13 @@ const Auth = {
           ...(options.headers || {})
         }
       });
-      if (res.status === 401) { this.logout(); return null; }
+      if (res.status === 401) {
+        if (!this._loggingOut) {
+          this._loggingOut = true;
+          this.logout();
+        }
+        return null;
+      }
       if (res.status === 204) return {};
       if (!res.ok) {
         let errBody = null;
