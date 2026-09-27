@@ -33,7 +33,7 @@ ROOT_URLCONF = 'edusphere.urls'
 
 TEMPLATES = [{
     'BACKEND': 'django.template.backends.django.DjangoTemplates',
-    'DIRS': [],
+    'DIRS': [BASE_DIR.parent / 'frontend'],
     'APP_DIRS': True,
     'OPTIONS': {
         'context_processors': [
@@ -72,6 +72,7 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
     'UNAUTHENTICATED_USER': None,
+    'UNAUTHENTICATED_TOKEN': None,
 }
 
 # CORS — allow frontend dev server
