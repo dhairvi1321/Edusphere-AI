@@ -1,4 +1,4 @@
-from mongoengine import Document, StringField, BooleanField, DateField, ReferenceField, ListField, EmbeddedDocument, EmbeddedDocumentField, CASCADE
+from mongoengine import Document, StringField, BooleanField, DateField, ListField, EmbeddedDocument, EmbeddedDocumentField, DictField
 from datetime import datetime
 
 
@@ -15,6 +15,7 @@ class Subject(Document):
     name = StringField(required=True, max_length=100)
     description = StringField(default='')
     topics = ListField(EmbeddedDocumentField(SyllabusTopic), default=list)
+    syllabus_files = ListField(DictField(), default=list)  # [{name, url}]
     created_at = DateField(default=datetime.utcnow)
 
 
@@ -39,3 +40,15 @@ class Exam(Document):
     title = StringField(required=True, max_length=200)
     exam_date = StringField(required=True)  # YYYY-MM-DD
     notes = StringField(default='')
+
+
+class StudyPlan(Document):
+    meta = {'collection': 'study_plans'}
+
+    user_id = StringField(required=True)
+    title = StringField(required=True, max_length=200)
+    start_date = StringField(required=True)   # YYYY-MM-DD
+    end_date = StringField(required=True)     # YYYY-MM-DD
+    daily_hours = StringField(default='2')
+    sessions = ListField(DictField(), default=list)  # [{date, subject, topic, duration}]
+    created_at = DateField(default=datetime.utcnow)

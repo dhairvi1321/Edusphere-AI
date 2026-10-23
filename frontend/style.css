@@ -2232,6 +2232,105 @@ section { padding: 100px 0; }
 .toast.success { background: rgba(52,211,153,0.9); }
 .toast.error { background: rgba(239,68,68,0.9); }
 
+/* --- Syllabus Files --- */
+.syllabus-files-section {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+}
+
+.syllabus-files-label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 6px;
+}
+
+.syllabus-file-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 0;
+  color: var(--text);
+  font-size: 0.78rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.syllabus-file-item:last-child { border-bottom: none; }
+.syllabus-file-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.file-upload-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: 100%;
+  justify-content: center;
+}
+
+.file-upload-label:hover {
+  border-color: var(--border-bright);
+  color: var(--primary-bright);
+}
+
+/* --- Study Plan --- */
+.study-sessions-list {
+  padding: 8px 0;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.study-day-group {
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.study-day-group:last-child { border-bottom: none; }
+
+.study-day-label {
+  color: var(--primary-bright);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 6px;
+}
+
+.study-session-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.study-session-item:last-child { border-bottom: none; }
+
+.session-subject-tag {
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: rgba(99,102,241,0.15);
+  color: var(--primary-bright);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.session-topic-name {
+  color: var(--text-bright);
+  font-size: 0.82rem;
+  flex: 1;
+}
+
 /* --- Dashboard responsive --- */
 @media (max-width: 1024px) {
   .dash-stats-grid { grid-template-columns: repeat(2, 1fr); }

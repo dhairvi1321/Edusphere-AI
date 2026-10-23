@@ -3,14 +3,19 @@ from .models import User
 
 
 class RegisterSerializer(serializers.Serializer):
-    username = serializers.EmailField()
+    username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=6)
-    first_name = serializers.CharField(default='')
+    first_name = serializers.CharField(default='', allow_blank=True)
 
     def validate_email(self, value):
         if User.objects(email=value).first():
             raise serializers.ValidationError('A user with that email already exists.')
+        return value
+
+    def validate_username(self, value):
+        if User.objects(username=value).first():
+            raise serializers.ValidationError('A user with that username already exists.')
         return value
 
     def create(self, validated_data):

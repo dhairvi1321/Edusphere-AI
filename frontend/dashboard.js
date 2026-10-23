@@ -11,8 +11,9 @@ document.getElementById('dashGreeting').textContent = `Welcome back, ${firstName
 document.getElementById('todayDate').textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
 /* ===== STATE ===== */
-let subjects = [], assignments = [], exams = [];
+let subjects = [], assignments = [], exams = [], studyPlans = [];
 let assignmentFilter = 'all';
+let generatedSessions = null, generatedPlanMeta = null;
 
 /* ===== NAVIGATION ===== */
 function switchSection(name) {
@@ -92,14 +93,16 @@ function populateSubjectSelects() {
 
 /* ===== FETCH ALL DATA ===== */
 async function loadAll() {
-  [subjects, assignments, exams] = await Promise.all([
+  [subjects, assignments, exams, studyPlans] = await Promise.all([
     Auth.apiFetch('/academics/subjects/'),
     Auth.apiFetch('/academics/assignments/'),
-    Auth.apiFetch('/academics/exams/')
+    Auth.apiFetch('/academics/exams/'),
+    Auth.apiFetch('/academics/study-plans/')
   ]);
   subjects = subjects || [];
   assignments = assignments || [];
   exams = exams || [];
+  studyPlans = studyPlans || [];
 
   populateSubjectSelects();
   renderStats();
@@ -107,6 +110,7 @@ async function loadAll() {
   renderSubjects();
   renderAssignments();
   renderExams();
+  renderStudyPlans();
 }
 
 /* ===== STATS ===== */
@@ -197,17 +201,28 @@ function renderSubjects() {
       ${topics.length ? `<div class="subject-topics">
         ${topics.map(t => `
           <div class="topic-item">
-            <div class="topic-check ${t.is_completed ? 'done' : ''}" onclick="toggleTopic(${t.id}, ${!t.is_completed})"></div>
+            <div class="topic-check ${t.is_completed ? 'done' : ''}" onclick="toggleTopic('${t.id}', ${!t.is_completed})"></div>
             <span class="topic-name ${t.is_completed ? 'done' : ''}">${t.title}</span>
-            <button class="icon-btn danger" onclick="deleteTopic(${t.id})" title="Delete topic">
+            <button class="icon-btn danger" onclick="deleteTopic('${t.id}')" title="Delete topic">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
           </div>`).join('')}
       </div>` : ''}
+      ${(s.syllabus_files && s.syllabus_files.length) ? `<div class="syllabus-files-section">
+        <div class="syllabus-files-label">Syllabus Files</div>
+        ${s.syllabus_files.map(f => `<div class="syllabus-file-item">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2"/><polyline points="14 2 14 8 20 8" stroke="currentColor" stroke-width="2"/></svg>
+          <span>${f.name}</span>
+          <button class="icon-btn danger" onclick="deleteSyllabusFile('${s.id}', '${f.filename}')" title="Remove file">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>`).join('')}
+      </div>` : ''}
       <div class="subject-card-actions">
-        <button class="btn btn-ghost" onclick="openAddTopic(${s.id})">+ Topic</button>
-        <button class="btn btn-ghost" onclick="openEditSubject(${s.id})">Edit</button>
-        <button class="btn btn-ghost" style="color:#f87171" onclick="deleteSubject(${s.id})">Delete</button>
+        <button class="btn btn-ghost" onclick="openAddTopic('${s.id}')">+ Topic</button>
+        <button class="btn btn-ghost" onclick="openUploadSyllabus('${s.id}')">+ File</button>
+        <button class="btn btn-ghost" onclick="openEditSubject('${s.id}')">Edit</button>
+        <button class="btn btn-ghost" style="color:#f87171" onclick="deleteSubject('${s.id}')">Delete</button>
       </div>
     </div>`;
   }).join('');
@@ -245,13 +260,13 @@ function renderAssignments() {
         <td><span class="status-badge ${a.is_completed ? 'status-done' : 'status-pending'}">${a.is_completed ? 'Done' : 'Pending'}</span></td>
         <td>
           <div class="row-actions">
-            <button class="icon-btn" onclick="toggleAssignment(${a.id}, ${!a.is_completed})" title="${a.is_completed ? 'Mark pending' : 'Mark done'}">
+            <button class="icon-btn" onclick="toggleAssignment('${a.id}', ${!a.is_completed})" title="${a.is_completed ? 'Mark pending' : 'Mark done'}">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
-            <button class="icon-btn" onclick="openEditAssignment(${a.id})" title="Edit">
+            <button class="icon-btn" onclick="openEditAssignment('${a.id}')" title="Edit">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
-            <button class="icon-btn danger" onclick="deleteAssignment(${a.id})" title="Delete">
+            <button class="icon-btn danger" onclick="deleteAssignment('${a.id}')" title="Delete">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6M9 6V4h6v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
           </div>
@@ -282,10 +297,10 @@ function renderExams() {
       <div class="exam-card-date">📅 ${formatDate(e.exam_date)}</div>
       ${e.notes ? `<div class="exam-card-notes">${e.notes}</div>` : ''}
       <div class="exam-card-actions">
-        <button class="icon-btn" onclick="openEditExam(${e.id})" title="Edit">
+        <button class="icon-btn" onclick="openEditExam('${e.id}')" title="Edit">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
-        <button class="icon-btn danger" onclick="deleteExam(${e.id})" title="Delete">
+        <button class="icon-btn danger" onclick="deleteExam('${e.id}')" title="Delete">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6M9 6V4h6v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
       </div>
@@ -344,7 +359,7 @@ function openAddTopic(subjectId) {
 document.getElementById('topicForm').addEventListener('submit', async e => {
   e.preventDefault();
   const body = {
-    subject: parseInt(document.getElementById('topicSubjectId').value),
+    subject: document.getElementById('topicSubjectId').value,
     title: document.getElementById('topicTitle').value.trim()
   };
   const res = await Auth.apiFetch('/academics/topics/', { method: 'POST', body: JSON.stringify(body) });
@@ -393,7 +408,7 @@ document.getElementById('assignmentForm').addEventListener('submit', async e => 
   const subVal = document.getElementById('assignmentSubject').value;
   const body = {
     title: document.getElementById('assignmentTitle').value.trim(),
-    subject: subVal ? parseInt(subVal) : null,
+    subject: subVal || null,
     due_date: document.getElementById('assignmentDue').value || null,
     priority: document.getElementById('assignmentPriority').value
   };
@@ -447,7 +462,7 @@ document.getElementById('examForm').addEventListener('submit', async e => {
   const subVal = document.getElementById('examSubject').value;
   const body = {
     title: document.getElementById('examTitle').value.trim(),
-    subject: subVal ? parseInt(subVal) : null,
+    subject: subVal || null,
     exam_date: document.getElementById('examDate').value,
     notes: document.getElementById('examNotes').value.trim()
   };
@@ -477,6 +492,162 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
     renderAssignments();
   });
 });
+
+/* ===== SYLLABUS FILE UPLOAD ===== */
+let currentUploadSubjectId = null;
+
+function openUploadSyllabus(subjectId) {
+  currentUploadSubjectId = subjectId;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.pdf,.doc,.docx,.txt,.png,.jpg,.jpeg';
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`http://127.0.0.1:8000/api/academics/subjects/${subjectId}/files/`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${Auth.getToken()}` },
+      body: formData
+    });
+    if (res.ok) { showToast('File uploaded!'); await loadAll(); }
+    else showToast('Upload failed.', 'error');
+  };
+  input.click();
+}
+
+async function deleteSyllabusFile(subjectId, filename) {
+  if (!confirm('Remove this file?')) return;
+  const res = await fetch(`http://127.0.0.1:8000/api/academics/subjects/${subjectId}/files/${filename}/`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${Auth.getToken()}` }
+  });
+  if (res.ok) { showToast('File removed.'); await loadAll(); }
+  else showToast('Failed to remove file.', 'error');
+}
+
+/* ===== STUDY PLAN ===== */
+function renderStudyPlans() {
+  const el = document.getElementById('studyPlansList');
+  if (!studyPlans.length) {
+    el.innerHTML = `<div class="dash-empty">No saved study plans yet. Click "Generate Plan" to create one!</div>`;
+    return;
+  }
+  el.innerHTML = studyPlans.map(p => {
+    const sessionsByDate = {};
+    (p.sessions || []).forEach(s => {
+      if (!sessionsByDate[s.date]) sessionsByDate[s.date] = [];
+      sessionsByDate[s.date].push(s);
+    });
+    const dates = Object.keys(sessionsByDate).sort();
+    return `<div class="dash-card study-plan-card" style="margin-bottom:16px">
+      <div class="dash-card-header">
+        <div>
+          <span class="dash-card-title">${p.title}</span>
+          <div style="color:var(--muted);font-size:0.72rem;margin-top:2px">${formatDate(p.start_date)} → ${formatDate(p.end_date)} · ${p.daily_hours}h/day</div>
+        </div>
+        <button class="icon-btn danger" onclick="deleteStudyPlan('${p.id}')" title="Delete plan">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6M9 6V4h6v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="study-sessions-list">
+        ${dates.slice(0, 5).map(date => `
+          <div class="study-day-group">
+            <div class="study-day-label">${formatDate(date)}</div>
+            ${sessionsByDate[date].map(s => `
+              <div class="study-session-item">
+                <span class="session-subject-tag">${s.subject}</span>
+                <span class="session-topic-name">${s.topic}</span>
+                <span class="session-dur">${s.duration}</span>
+              </div>`).join('')}
+          </div>`).join('')}
+        ${dates.length > 5 ? `<div class="dash-empty" style="padding:10px 16px">+${dates.length - 5} more days...</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('generatePlanBtn').addEventListener('click', () => {
+  document.getElementById('planTitle').value = '';
+  document.getElementById('planStartDate').value = '';
+  document.getElementById('planEndDate').value = '';
+  document.getElementById('planDailyHours').value = '2';
+  openModal('generatePlanModal');
+});
+
+document.getElementById('generatePlanForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const title = document.getElementById('planTitle').value.trim();
+  const start_date = document.getElementById('planStartDate').value;
+  const end_date = document.getElementById('planEndDate').value;
+  const daily_hours = document.getElementById('planDailyHours').value;
+
+  const res = await Auth.apiFetch('/academics/study-plans/generate/', {
+    method: 'POST',
+    body: JSON.stringify({ start_date, end_date, daily_hours: parseInt(daily_hours) })
+  });
+
+  if (!res || !res.sessions) { showToast('Generation failed. Make sure you have subjects with topics.', 'error'); return; }
+
+  generatedSessions = res.sessions;
+  generatedPlanMeta = { title, start_date, end_date, daily_hours };
+
+  closeModal('generatePlanModal');
+
+  // Show generated plan preview
+  const wrap = document.getElementById('generatedPlanWrap');
+  document.getElementById('generatedPlanTitle').textContent = title;
+  const sessionsEl = document.getElementById('generatedPlanSessions');
+
+  const sessionsByDate = {};
+  res.sessions.forEach(s => {
+    if (!sessionsByDate[s.date]) sessionsByDate[s.date] = [];
+    sessionsByDate[s.date].push(s);
+  });
+  const dates = Object.keys(sessionsByDate).sort();
+
+  sessionsEl.innerHTML = dates.map(date => `
+    <div class="study-day-group">
+      <div class="study-day-label">${formatDate(date)}</div>
+      ${sessionsByDate[date].map(s => `
+        <div class="study-session-item">
+          <span class="session-subject-tag">${s.subject}</span>
+          <span class="session-topic-name">${s.topic}</span>
+          <span class="session-dur">${s.duration}</span>
+        </div>`).join('')}
+    </div>`).join('');
+
+  wrap.style.display = 'block';
+  document.getElementById('savePlanBtn').style.display = 'inline-flex';
+  showToast(`Plan generated! ${res.sessions.length} sessions over ${res.total_days} days.`);
+});
+
+document.getElementById('savePlanBtn').addEventListener('click', async () => {
+  if (!generatedSessions || !generatedPlanMeta) return;
+  const res = await Auth.apiFetch('/academics/study-plans/', {
+    method: 'POST',
+    body: JSON.stringify({ ...generatedPlanMeta, sessions: generatedSessions })
+  });
+  if (res) {
+    showToast('Study plan saved!');
+    document.getElementById('generatedPlanWrap').style.display = 'none';
+    document.getElementById('savePlanBtn').style.display = 'none';
+    generatedSessions = null;
+    generatedPlanMeta = null;
+    await loadAll();
+  } else showToast('Save failed.', 'error');
+});
+
+async function deleteStudyPlan(id) {
+  if (!confirm('Delete this study plan?')) return;
+  const res = await fetch(`http://127.0.0.1:8000/api/academics/study-plans/${id}/`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${Auth.getToken()}` }
+  });
+  if (res.ok) { showToast('Plan deleted.'); await loadAll(); }
+  else showToast('Delete failed.', 'error');
+}
 
 /* ===== LOAD ===== */
 loadAll();

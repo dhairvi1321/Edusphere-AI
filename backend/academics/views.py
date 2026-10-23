@@ -1,9 +1,14 @@
 import uuid
+import os
+from mongoengine.errors import DoesNotExist, ValidationError as MongoValidationError
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import permissions, status
-from .models import Subject, SyllabusTopic, Assignment, Exam
-from .serializers import SubjectSerializer, SyllabusTopicSerializer, AssignmentSerializer, ExamSerializer
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from django.conf import settings
+from .models import Subject, SyllabusTopic, Assignment, Exam, StudyPlan
+from .serializers import SubjectSerializer, SyllabusTopicSerializer, AssignmentSerializer, ExamSerializer, StudyPlanSerializer
+from datetime import datetime, timedelta
 
 
 def uid(request):
@@ -38,12 +43,12 @@ class SubjectListCreate(APIView):
 
 class SubjectDetail(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def _get(self, request, pk):
         try:
-            s = Subject.objects.get(id=pk, user_id=uid(request))
-            return s
-        except Subject.DoesNotExist:
+            return Subject.objects.get(id=pk, user_id=uid(request))
+        except (DoesNotExist, MongoValidationError, Exception):
             return None
 
     def get(self, request, pk):
@@ -76,6 +81,47 @@ class SubjectDetail(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class SubjectFileUpload(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk):
+        try:
+            s = Subject.objects.get(id=pk, user_id=str(request.user.id))
+        except (DoesNotExist, Exception):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'detail': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        upload_dir = os.path.join(settings.BASE_DIR, 'uploads', 'syllabus')
+        os.makedirs(upload_dir, exist_ok=True)
+        filename = f"{uuid.uuid4()}_{file.name}"
+        filepath = os.path.join(upload_dir, filename)
+        with open(filepath, 'wb+') as dest:
+            for chunk in file.chunks():
+                dest.write(chunk)
+
+        file_info = {'name': file.name, 'filename': filename}
+        s.syllabus_files.append(file_info)
+        s.save()
+        d = SubjectSerializer(s).data
+        d['id'] = str(s.id)
+        return Response(d, status=status.HTTP_201_CREATED)
+
+    def delete(self, request, pk, filename):
+        try:
+            s = Subject.objects.get(id=pk, user_id=str(request.user.id))
+        except (DoesNotExist, Exception):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        s.syllabus_files = [f for f in s.syllabus_files if f.get('filename') != filename]
+        s.save()
+        d = SubjectSerializer(s).data
+        d['id'] = str(s.id)
+        return Response(d)
+
+
 # ── Topics (embedded in Subject) ──────────────────────────────────────────────
 
 class TopicListCreate(APIView):
@@ -85,7 +131,7 @@ class TopicListCreate(APIView):
         subject_id = request.data.get('subject')
         try:
             s = Subject.objects.get(id=subject_id, user_id=uid(request))
-        except Subject.DoesNotExist:
+        except (DoesNotExist, MongoValidationError, Exception):
             return Response({'detail': 'Subject not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         topic = SyllabusTopic(
@@ -154,7 +200,7 @@ class AssignmentDetail(APIView):
     def _get(self, request, pk):
         try:
             return Assignment.objects.get(id=pk, user_id=uid(request))
-        except Assignment.DoesNotExist:
+        except (DoesNotExist, MongoValidationError, Exception):
             return None
 
     def put(self, request, pk):
@@ -170,7 +216,21 @@ class AssignmentDetail(APIView):
         return Response(AssignmentSerializer(a).data)
 
     def patch(self, request, pk):
-        return self.put(request, pk)
+        a = self._get(request, pk)
+        if not a:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        if 'title' in request.data:
+            a.title = request.data['title']
+        if 'subject' in request.data:
+            a.subject_id = request.data['subject'] or None
+        if 'due_date' in request.data:
+            a.due_date = request.data['due_date'] or None
+        if 'priority' in request.data:
+            a.priority = request.data['priority']
+        if 'is_completed' in request.data:
+            a.is_completed = request.data['is_completed']
+        a.save()
+        return Response(AssignmentSerializer(a).data)
 
     def delete(self, request, pk):
         a = self._get(request, pk)
@@ -207,7 +267,7 @@ class ExamDetail(APIView):
     def _get(self, request, pk):
         try:
             return Exam.objects.get(id=pk, user_id=uid(request))
-        except Exam.DoesNotExist:
+        except (DoesNotExist, MongoValidationError, Exception):
             return None
 
     def put(self, request, pk):
@@ -222,7 +282,19 @@ class ExamDetail(APIView):
         return Response(ExamSerializer(e).data)
 
     def patch(self, request, pk):
-        return self.put(request, pk)
+        e = self._get(request, pk)
+        if not e:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        if 'title' in request.data:
+            e.title = request.data['title']
+        if 'subject' in request.data:
+            e.subject_id = request.data['subject'] or None
+        if 'exam_date' in request.data:
+            e.exam_date = request.data['exam_date']
+        if 'notes' in request.data:
+            e.notes = request.data['notes']
+        e.save()
+        return Response(ExamSerializer(e).data)
 
     def delete(self, request, pk):
         e = self._get(request, pk)
@@ -230,3 +302,121 @@ class ExamDetail(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
         e.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ── Study Plans ───────────────────────────────────────────────────────────────
+
+class StudyPlanListCreate(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        plans = StudyPlan.objects(user_id=uid(request)).order_by('-created_at')
+        return Response([StudyPlanSerializer(p).data for p in plans])
+
+    def post(self, request):
+        title = request.data.get('title', 'My Study Plan')
+        start_date = request.data.get('start_date', '')
+        end_date = request.data.get('end_date', '')
+        daily_hours = str(request.data.get('daily_hours', '2'))
+        sessions = request.data.get('sessions', [])
+
+        if not start_date or not end_date:
+            return Response({'detail': 'start_date and end_date required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        plan = StudyPlan(
+            user_id=uid(request),
+            title=title,
+            start_date=start_date,
+            end_date=end_date,
+            daily_hours=daily_hours,
+            sessions=sessions,
+        )
+        plan.save()
+        return Response(StudyPlanSerializer(plan).data, status=status.HTTP_201_CREATED)
+
+
+class StudyPlanDetail(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get(self, request, pk):
+        try:
+            return StudyPlan.objects.get(id=pk, user_id=uid(request))
+        except (DoesNotExist, MongoValidationError, Exception):
+            return None
+
+    def delete(self, request, pk):
+        p = self._get(request, pk)
+        if not p:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        p.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class GenerateStudyPlan(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        start_date = request.data.get('start_date')
+        end_date = request.data.get('end_date')
+        daily_hours = int(request.data.get('daily_hours', 2))
+
+        if not start_date or not end_date:
+            return Response({'detail': 'start_date and end_date required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = uid(request)
+        subjects = list(Subject.objects(user_id=user_id))
+        exams = list(Exam.objects(user_id=user_id))
+
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d')
+            end = datetime.strptime(end_date, '%Y-%m-%d')
+        except ValueError:
+            return Response({'detail': 'Invalid date format.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        total_days = (end - start).days + 1
+        if total_days <= 0:
+            return Response({'detail': 'end_date must be after start_date.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Build topic pool: pending topics per subject
+        topic_pool = []
+        for s in subjects:
+            pending = [t for t in (s.topics or []) if not t.is_completed]
+            for t in pending:
+                topic_pool.append({'subject': s.name, 'subject_id': str(s.id), 'topic': t.title})
+
+        # Prioritize subjects with upcoming exams
+        exam_subjects = {}
+        for e in exams:
+            if e.subject_id:
+                try:
+                    exam_dt = datetime.strptime(e.exam_date, '%Y-%m-%d')
+                    if start <= exam_dt <= end + timedelta(days=14):
+                        exam_subjects[e.subject_id] = exam_dt
+                except ValueError:
+                    pass
+
+        topic_pool.sort(key=lambda x: exam_subjects.get(x['subject_id'], datetime.max))
+
+        sessions = []
+        slot_minutes = daily_hours * 60
+        session_duration = 45  # minutes per session
+        sessions_per_day = max(1, slot_minutes // session_duration)
+
+        topic_idx = 0
+        for day_offset in range(total_days):
+            if not topic_pool:
+                break
+            current_date = (start + timedelta(days=day_offset)).strftime('%Y-%m-%d')
+            for _ in range(sessions_per_day):
+                if topic_idx >= len(topic_pool):
+                    topic_idx = 0  # cycle through topics
+                item = topic_pool[topic_idx]
+                sessions.append({
+                    'date': current_date,
+                    'subject': item['subject'],
+                    'topic': item['topic'],
+                    'duration': f"{session_duration} min"
+                })
+                topic_idx += 1
+
+        return Response({'sessions': sessions, 'total_days': total_days, 'sessions_per_day': sessions_per_day})

@@ -14,6 +14,7 @@ class SubjectSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=100)
     description = serializers.CharField(default='', allow_blank=True)
     topics = serializers.SerializerMethodField()
+    syllabus_files = serializers.SerializerMethodField()
     created_at = serializers.DateField(read_only=True)
 
     def get_topics(self, obj):
@@ -21,6 +22,9 @@ class SubjectSerializer(serializers.Serializer):
             {'id': t.id, 'subject': str(obj.id), 'title': t.title, 'is_completed': t.is_completed}
             for t in (obj.topics or [])
         ]
+
+    def get_syllabus_files(self, obj):
+        return list(obj.syllabus_files or [])
 
 
 class AssignmentSerializer(serializers.Serializer):
@@ -56,4 +60,25 @@ class ExamSerializer(serializers.Serializer):
             'title': obj.title,
             'exam_date': obj.exam_date,
             'notes': obj.notes,
+        }
+
+
+class StudyPlanSerializer(serializers.Serializer):
+    id = serializers.CharField(read_only=True)
+    title = serializers.CharField(max_length=200)
+    start_date = serializers.CharField()
+    end_date = serializers.CharField()
+    daily_hours = serializers.CharField(default='2')
+    sessions = serializers.ListField(child=serializers.DictField(), default=list)
+    created_at = serializers.DateField(read_only=True)
+
+    def to_representation(self, obj):
+        return {
+            'id': str(obj.id),
+            'title': obj.title,
+            'start_date': obj.start_date,
+            'end_date': obj.end_date,
+            'daily_hours': obj.daily_hours,
+            'sessions': list(obj.sessions or []),
+            'created_at': str(obj.created_at),
         }
