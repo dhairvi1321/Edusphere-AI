@@ -12,6 +12,8 @@ from .views import (
     StudyPlanListCreate,
     StudyPlanDetail,
     GenerateStudyPlan,
+    RescheduleStudyPlan,
+    StudyInsights,
 )
 
 urlpatterns = [
@@ -31,5 +33,8 @@ urlpatterns = [
 
     path('study-plans/generate/', GenerateStudyPlan.as_view(), name='generate-study-plan'),
     path('study-plans/', StudyPlanListCreate.as_view(), name='study-plans'),
+    path('study-plans/<str:pk>/reschedule/', RescheduleStudyPlan.as_view(), name='reschedule-study-plan'),
     path('study-plans/<str:pk>/', StudyPlanDetail.as_view(), name='study-plan-detail'),
+
+    path('insights/', StudyInsights.as_view(), name='study-insights'),
 ]

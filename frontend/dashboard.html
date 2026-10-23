@@ -151,6 +151,27 @@
           </div>
         </div>
       </div>
+
+      <!-- Study progress summary -->
+      <div class="dash-card" style="margin-top:16px">
+        <div class="dash-card-header">
+          <span class="dash-card-title">Study Plan Progress</span>
+          <button class="btn btn-ghost btn-sm" onclick="switchSection('studyplan')">View plans</button>
+        </div>
+        <div style="padding:14px 18px" id="studyProgressSummary">
+          <div class="dash-empty" style="padding:12px 0">Loading...</div>
+        </div>
+      </div>
+
+      <!-- Study Insights -->
+      <div class="dash-card" style="margin-top:16px">
+        <div class="dash-card-header">
+          <span class="dash-card-title">📊 Study Insights</span>
+        </div>
+        <div id="studyInsightsWrap" style="padding:16px 18px">
+          <div class="dash-empty" style="padding:12px 0">Loading...</div>
+        </div>
+      </div>
     </section>
 
     <!-- ===== SUBJECTS SECTION ===== -->
@@ -364,6 +385,14 @@
             <input type="text" id="topicTitle" class="form-input" placeholder="e.g. Binary Trees" required />
           </div>
         </div>
+        <div class="form-group">
+          <label class="form-label">Difficulty</label>
+          <select id="topicDifficulty" class="form-input form-select">
+            <option value="easy">Easy</option>
+            <option value="medium" selected>Medium</option>
+            <option value="hard">Hard</option>
+          </select>
+        </div>
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" data-modal="topicModal">Cancel</button>
           <button type="submit" class="btn btn-primary">Add Topic</button>
@@ -413,6 +442,61 @@
           <button type="submit" class="btn btn-primary">✨ Generate</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Reschedule Study Plan Modal -->
+  <div class="modal-overlay" id="rescheduleModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Reschedule Plan</h3>
+        <button class="modal-close" data-modal="rescheduleModal">✕</button>
+      </div>
+      <form id="rescheduleForm" class="modal-form">
+        <input type="hidden" id="reschedulePlanId" />
+        <div class="form-group">
+          <label class="form-label">New Start Date</label>
+          <div class="input-wrap">
+            <input type="date" id="rescheduleStartDate" class="form-input" required />
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">New End Date</label>
+          <div class="input-wrap">
+            <input type="date" id="rescheduleEndDate" class="form-input" required />
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Daily Study Hours</label>
+          <select id="rescheduleDailyHours" class="form-input form-select">
+            <option value="1">1 hour</option>
+            <option value="2" selected>2 hours</option>
+            <option value="3">3 hours</option>
+            <option value="4">4 hours</option>
+            <option value="6">6 hours</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-modal="rescheduleModal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Preview Reschedule</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Reschedule Preview Modal -->
+  <div class="modal-overlay" id="reschedulePreviewModal">
+    <div class="modal" style="max-width:560px">
+      <div class="modal-header">
+        <h3>Reschedule Preview</h3>
+        <button class="modal-close" data-modal="reschedulePreviewModal">✕</button>
+      </div>
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);font-size:0.82rem;color:var(--muted)" id="reschedulePreviewMeta"></div>
+      <div id="reschedulePreviewSessions" class="study-sessions-list" style="max-height:320px"></div>
+      <div style="padding:14px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border)">
+        <button class="btn btn-ghost" onclick="closeModal('reschedulePreviewModal')">Cancel — Keep Original</button>
+        <button class="btn btn-primary" id="confirmRescheduleBtn">✓ Confirm &amp; Save</button>
+      </div>
     </div>
   </div>
 

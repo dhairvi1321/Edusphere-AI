@@ -107,6 +107,7 @@ async function loadAll() {
   populateSubjectSelects();
   renderStats();
   renderOverviewLists();
+  renderInsights();
   renderSubjects();
   renderAssignments();
   renderExams();
@@ -122,6 +123,27 @@ function renderStats() {
   document.getElementById('statPending').textContent = pending;
   document.getElementById('statDone').textContent = done;
   document.getElementById('statExams').textContent = upcoming;
+
+  // Remaining study sessions across all saved plans
+  const allSessions = studyPlans.flatMap(p => p.sessions || []);
+  const remainingSessions = allSessions.filter(s => !s.is_completed).length;
+  const completedSessions = allSessions.length - remainingSessions;
+  const sessionPct = allSessions.length ? Math.round((completedSessions / allSessions.length) * 100) : 0;
+
+  const el = document.getElementById('studyProgressSummary');
+  if (el) {
+    if (!allSessions.length) {
+      el.innerHTML = `<div class="dash-empty" style="padding:12px 0">No study sessions yet.</div>`;
+    } else {
+      el.innerHTML = `
+        <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--muted);margin-bottom:6px">
+          <span>${completedSessions} of ${allSessions.length} sessions complete</span>
+          <span>${sessionPct}%</span>
+        </div>
+        <div class="progress-bar-wrap"><div class="progress-bar" style="width:${sessionPct}%"></div></div>
+        <div style="margin-top:8px;font-size:0.75rem;color:var(--muted)">${remainingSessions} session(s) remaining</div>`;
+    }
+  }
 }
 
 /* ===== OVERVIEW LISTS ===== */
@@ -203,6 +225,7 @@ function renderSubjects() {
           <div class="topic-item">
             <div class="topic-check ${t.is_completed ? 'done' : ''}" onclick="toggleTopic('${t.id}', ${!t.is_completed})"></div>
             <span class="topic-name ${t.is_completed ? 'done' : ''}">${t.title}</span>
+            <span class="difficulty-badge difficulty-${t.difficulty || 'medium'}">${t.difficulty || 'medium'}</span>
             <button class="icon-btn danger" onclick="deleteTopic('${t.id}')" title="Delete topic">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
@@ -360,7 +383,8 @@ document.getElementById('topicForm').addEventListener('submit', async e => {
   e.preventDefault();
   const body = {
     subject: document.getElementById('topicSubjectId').value,
-    title: document.getElementById('topicTitle').value.trim()
+    title: document.getElementById('topicTitle').value.trim(),
+    difficulty: document.getElementById('topicDifficulty').value,
   };
   const res = await Auth.apiFetch('/academics/topics/', { method: 'POST', body: JSON.stringify(body) });
   if (res) { closeModal('topicModal'); showToast('Topic added!'); await loadAll(); }
@@ -535,34 +559,53 @@ function renderStudyPlans() {
     return;
   }
   el.innerHTML = studyPlans.map(p => {
+    const total = (p.sessions || []).length;
+    const done = (p.sessions || []).filter(s => s.is_completed).length;
+    const pct = total ? Math.round((done / total) * 100) : 0;
+
     const sessionsByDate = {};
     (p.sessions || []).forEach(s => {
       if (!sessionsByDate[s.date]) sessionsByDate[s.date] = [];
       sessionsByDate[s.date].push(s);
     });
     const dates = Object.keys(sessionsByDate).sort();
+
     return `<div class="dash-card study-plan-card" style="margin-bottom:16px">
       <div class="dash-card-header">
         <div>
           <span class="dash-card-title">${p.title}</span>
           <div style="color:var(--muted);font-size:0.72rem;margin-top:2px">${formatDate(p.start_date)} → ${formatDate(p.end_date)} · ${p.daily_hours}h/day</div>
         </div>
-        <button class="icon-btn danger" onclick="deleteStudyPlan('${p.id}')" title="Delete plan">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6M9 6V4h6v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        </button>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost btn-sm" onclick="openReschedule('${p.id}', '${p.daily_hours}')" title="Reschedule">↺ Reschedule</button>
+          <button class="icon-btn danger" onclick="deleteStudyPlan('${p.id}')" title="Delete plan">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><polyline points="3 6 5 6 21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6M9 6V4h6v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div style="margin:8px 0 12px">
+        <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--muted);margin-bottom:4px">
+          <span>Progress: ${done}/${total} sessions</span>
+          <span>${pct}%</span>
+        </div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" style="width:${pct}%"></div>
+        </div>
       </div>
       <div class="study-sessions-list">
-        ${dates.slice(0, 5).map(date => `
+        ${dates.map(date => `
           <div class="study-day-group">
             <div class="study-day-label">${formatDate(date)}</div>
             ${sessionsByDate[date].map(s => `
-              <div class="study-session-item">
+              <div class="study-session-item ${s.is_completed ? 'session-done' : ''}">
+                <input type="checkbox" ${s.is_completed ? 'checked' : ''}
+                  ${s.session_id ? `onchange="toggleSession('${p.id}', '${s.session_id}', this.checked, this)"` : 'disabled title="Session ID missing — please delete and regenerate this plan"'}
+                  style="cursor:${s.session_id ? 'pointer' : 'not-allowed'};margin-right:6px" />
                 <span class="session-subject-tag">${s.subject}</span>
                 <span class="session-topic-name">${s.topic}</span>
                 <span class="session-dur">${s.duration}</span>
               </div>`).join('')}
           </div>`).join('')}
-        ${dates.length > 5 ? `<div class="dash-empty" style="padding:10px 16px">+${dates.length - 5} more days...</div>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -647,6 +690,194 @@ async function deleteStudyPlan(id) {
   });
   if (res.ok) { showToast('Plan deleted.'); await loadAll(); }
   else showToast('Delete failed.', 'error');
+}
+
+async function toggleSession(planId, sessionId, completed, checkbox) {
+  checkbox.disabled = true;
+  const res = await Auth.apiFetch(`/academics/study-plans/${planId}/`, {
+    method: 'PATCH',
+    body: JSON.stringify({ session_id: sessionId, is_completed: completed })
+  });
+  if (res) {
+    const plan = studyPlans.find(p => p.id === planId);
+    if (plan) {
+      const s = (plan.sessions || []).find(s => s.session_id === sessionId);
+      if (s) s.is_completed = completed;
+    }
+    renderStudyPlans();
+  } else {
+    checkbox.checked = !completed; // revert visual state
+    checkbox.disabled = false;
+    showToast('Failed to update session.', 'error');
+  }
+}
+
+/* ===== RESCHEDULE ===== */
+let reschedulePreviewData = null;
+
+function openReschedule(planId, dailyHours) {
+  document.getElementById('reschedulePlanId').value = planId;
+  document.getElementById('rescheduleStartDate').value = '';
+  document.getElementById('rescheduleEndDate').value = '';
+  document.getElementById('rescheduleDailyHours').value = dailyHours || '2';
+  openModal('rescheduleModal');
+}
+
+document.getElementById('rescheduleForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const planId = document.getElementById('reschedulePlanId').value;
+  const start_date = document.getElementById('rescheduleStartDate').value;
+  const end_date = document.getElementById('rescheduleEndDate').value;
+  const daily_hours = parseInt(document.getElementById('rescheduleDailyHours').value);
+
+  if (!start_date || !end_date) { showToast('Please fill in both dates.', 'error'); return; }
+  if (end_date < start_date) { showToast('End date must be on or after start date.', 'error'); return; }
+
+  const res = await Auth.apiFetch(`/academics/study-plans/${planId}/reschedule/`, {
+    method: 'POST',
+    body: JSON.stringify({ start_date, end_date, daily_hours })
+  });
+
+  if (!res) { showToast('Preview failed. Check your inputs.', 'error'); return; }
+
+  reschedulePreviewData = { planId, start_date, end_date, daily_hours, sessions: res.new_sessions };
+
+  const meta = document.getElementById('reschedulePreviewMeta');
+  meta.innerHTML = [
+    `<span style="color:var(--green)">✓ ${res.preserved_completed} completed session(s) preserved</span>`,
+    `<span style="color:var(--primary-bright)"> · ${res.total_new} new session(s) scheduled</span>`,
+    res.removed_pending ? `<span style="color:#fbbf24"> · ${res.removed_pending} pending session(s) replaced</span>` : '',
+    res.unscheduled_topics ? `<span style="color:var(--muted)"> · ${res.unscheduled_topics} topic(s) couldn't fit in the date range</span>` : ''
+  ].filter(Boolean).join('');
+
+  const sessionsEl = document.getElementById('reschedulePreviewSessions');
+  if (!res.new_sessions || !res.new_sessions.length) {
+    sessionsEl.innerHTML = `<div class="dash-empty">${res.message}</div>`;
+  } else {
+    const byDate = {};
+    res.new_sessions.forEach(s => { if (!byDate[s.date]) byDate[s.date] = []; byDate[s.date].push(s); });
+    sessionsEl.innerHTML = Object.keys(byDate).sort().map(date => `
+      <div class="study-day-group">
+        <div class="study-day-label">${formatDate(date)}</div>
+        ${byDate[date].map(s => `
+          <div class="study-session-item">
+            <span class="session-subject-tag">${s.subject}</span>
+            <span class="session-topic-name">${s.topic}</span>
+            <span class="session-dur">${s.duration}</span>
+          </div>`).join('')}
+      </div>`).join('');
+  }
+
+  closeModal('rescheduleModal');
+  openModal('reschedulePreviewModal');
+});
+
+document.getElementById('confirmRescheduleBtn').addEventListener('click', async () => {
+  if (!reschedulePreviewData) return;
+  const { planId, start_date, end_date, daily_hours } = reschedulePreviewData;
+
+  const res = await Auth.apiFetch(`/academics/study-plans/${planId}/reschedule/`, {
+    method: 'PUT',
+    body: JSON.stringify({ start_date, end_date, daily_hours })
+  });
+
+  if (res) {
+    showToast('Plan rescheduled and saved!');
+    closeModal('reschedulePreviewModal');
+    reschedulePreviewData = null;
+    await loadAll();
+  } else {
+    showToast('Failed to save reschedule.', 'error');
+  }
+});
+
+/* ===== STUDY INSIGHTS ===== */
+async function renderInsights() {
+  const el = document.getElementById('studyInsightsWrap');
+  const data = await Auth.apiFetch('/academics/insights/');
+  if (!data) { el.innerHTML = `<div class="dash-empty">Could not load insights.</div>`; return; }
+
+  const todayPct = data.today_total ? Math.round((data.today_done / data.today_total) * 100) : null;
+
+  el.innerHTML = `
+    <div class="insights-grid">
+      <!-- Overall completion -->
+      <div class="insight-block">
+        <div class="insight-label">Overall Completion</div>
+        <div class="insight-big">${data.completion_pct}%</div>
+        <div class="progress-bar-wrap" style="margin-top:6px">
+          <div class="progress-bar" style="width:${data.completion_pct}%"></div>
+        </div>
+        <div class="insight-sub">${data.completed_sessions} done · ${data.pending_sessions} pending</div>
+      </div>
+
+      <!-- Daily progress -->
+      <div class="insight-block">
+        <div class="insight-label">Today's Sessions</div>
+        ${
+          data.today_total
+            ? `<div class="insight-big">${data.today_done}/${data.today_total}</div>
+               <div class="progress-bar-wrap" style="margin-top:6px">
+                 <div class="progress-bar" style="width:${todayPct}%"></div>
+               </div>
+               <div class="insight-sub">${todayPct}% complete today</div>`
+            : `<div class="insight-sub" style="margin-top:8px">No sessions scheduled today</div>`
+        }
+      </div>
+
+      <!-- Upcoming exams -->
+      <div class="insight-block">
+        <div class="insight-label">Upcoming Exams <span style="color:var(--muted)">(7 days)</span></div>
+        ${
+          data.upcoming_exams.length
+            ? data.upcoming_exams.map(e =>
+                `<div class="insight-row">
+                  <span class="insight-row-name">${e.title}</span>
+                  <span class="exam-days-badge ${e.days_until <= 2 ? 'days-soon' : e.days_until <= 5 ? 'days-upcoming' : 'days-far'}">
+                    ${e.days_until === 0 ? 'Today' : `In ${e.days_until}d`}
+                  </span>
+                </div>`).join('')
+            : `<div class="insight-sub" style="margin-top:8px">No exams in the next 7 days 🎉</div>`
+        }
+      </div>
+
+      <!-- Urgent assignments -->
+      <div class="insight-block">
+        <div class="insight-label">Urgent Assignments</div>
+        ${
+          data.urgent_assignments.length
+            ? data.urgent_assignments.map(a =>
+                `<div class="insight-row">
+                  <span class="insight-row-name">${a.title}</span>
+                  ${priorityBadge(a.priority)}
+                </div>`).join('')
+            : `<div class="insight-sub" style="margin-top:8px">No urgent assignments 🎉</div>`
+        }
+      </div>
+    </div>
+
+    <!-- Remaining topics by subject -->
+    ${
+      data.topics_by_subject.length
+        ? `<div style="margin-top:16px">
+            <div class="insight-label" style="margin-bottom:10px">Remaining Topics by Subject</div>
+            <div class="insights-topics-grid">
+              ${data.topics_by_subject.map(s => {
+                const pct = Math.round(((s.total - s.remaining) / s.total) * 100);
+                return `<div class="insight-topic-row">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                    <span style="color:var(--text-bright);font-size:0.8rem;font-weight:600">${s.subject}</span>
+                    <span style="color:var(--muted);font-size:0.72rem">${s.remaining} left</span>
+                  </div>
+                  <div class="progress-bar-wrap">
+                    <div class="progress-bar" style="width:${pct}%"></div>
+                  </div>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>`
+        : ''
+    }`;
 }
 
 /* ===== LOAD ===== */

@@ -1,11 +1,12 @@
 from mongoengine import Document, StringField, BooleanField, DateField, ListField, EmbeddedDocument, EmbeddedDocumentField, DictField
-from datetime import datetime
+from datetime import datetime, date
 
 
 class SyllabusTopic(EmbeddedDocument):
     id = StringField()  # client-side generated or set on save
     title = StringField(required=True, max_length=200)
     is_completed = BooleanField(default=False)
+    difficulty = StringField(default='medium', choices=('easy', 'medium', 'hard'))
 
 
 class Subject(Document):
@@ -16,7 +17,7 @@ class Subject(Document):
     description = StringField(default='')
     topics = ListField(EmbeddedDocumentField(SyllabusTopic), default=list)
     syllabus_files = ListField(DictField(), default=list)  # [{name, url}]
-    created_at = DateField(default=datetime.utcnow)
+    created_at = DateField(default=date.today)
 
 
 class Assignment(Document):

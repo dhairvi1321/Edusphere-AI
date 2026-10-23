@@ -2364,3 +2364,125 @@ section { padding: 100px 0; }
   .subjects-grid { grid-template-columns: 1fr; }
   .exams-grid { grid-template-columns: 1fr; }
 }
+
+/* --- Difficulty badges (topic items) --- */
+.difficulty-badge {
+  padding: 2px 7px;
+  border-radius: 20px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: capitalize;
+  flex-shrink: 0;
+}
+
+.difficulty-easy   { background: rgba(52,211,153,0.12); color: #34d399; }
+.difficulty-medium { background: rgba(251,191,36,0.12);  color: #fbbf24; }
+.difficulty-hard   { background: rgba(239,68,68,0.12);   color: #f87171; }
+
+/* --- Completed session styling --- */
+.study-session-item.session-done .session-topic-name {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.study-session-item.session-done .session-subject-tag {
+  opacity: 0.5;
+}
+
+.study-session-item.session-done input[type="checkbox"] {
+  opacity: 0.5;
+}
+
+/* --- Study Insights --- */
+.insights-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 4px;
+}
+
+.insight-block {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.02);
+}
+
+.insight-label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 6px;
+}
+
+.insight-big {
+  color: var(--white);
+  font-size: 1.6rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.insight-sub {
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin-top: 6px;
+}
+
+.insight-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.insight-row:last-child { border-bottom: none; }
+
+.insight-row-name {
+  color: var(--text-bright);
+  font-size: 0.8rem;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insights-topics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.insight-topic-row {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.02);
+}
+
+@media (max-width: 600px) {
+  .insights-grid { grid-template-columns: 1fr; }
+}
+
+/* form-input without icon wrapper (select, textarea) */
+.modal-form .form-input:not(.input-wrap .form-input) {
+  padding-left: 14px;
+}
+
+/* Select dropdown dark theme fix */
+select.form-input {
+  background-color: #0d1117;
+  color: var(--text-bright);
+}
+
+select.form-input option {
+  background-color: #0d1117;
+  color: var(--text-bright);
+}
+
+select.form-input option:checked {
+  background-color: rgba(99,102,241,0.35);
+}

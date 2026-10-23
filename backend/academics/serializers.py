@@ -7,6 +7,7 @@ class SyllabusTopicSerializer(serializers.Serializer):
     subject = serializers.CharField(read_only=True)  # parent subject id, set in view
     title = serializers.CharField(max_length=200)
     is_completed = serializers.BooleanField(default=False)
+    difficulty = serializers.ChoiceField(choices=['easy', 'medium', 'hard'], default='medium')
 
 
 class SubjectSerializer(serializers.Serializer):
@@ -19,7 +20,13 @@ class SubjectSerializer(serializers.Serializer):
 
     def get_topics(self, obj):
         return [
-            {'id': t.id, 'subject': str(obj.id), 'title': t.title, 'is_completed': t.is_completed}
+            {
+                'id': t.id,
+                'subject': str(obj.id),
+                'title': t.title,
+                'is_completed': t.is_completed,
+                'difficulty': t.difficulty or 'medium',
+            }
             for t in (obj.topics or [])
         ]
 
