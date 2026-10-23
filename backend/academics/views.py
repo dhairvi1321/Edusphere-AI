@@ -352,71 +352,195 @@ class StudyPlanDetail(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+
 class GenerateStudyPlan(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         start_date = request.data.get('start_date')
         end_date = request.data.get('end_date')
-        daily_hours = int(request.data.get('daily_hours', 2))
+
+        try:
+            daily_hours = int(request.data.get('daily_hours', 2))
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'daily_hours must be a whole number.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         if not start_date or not end_date:
-            return Response({'detail': 'start_date and end_date required.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'detail': 'start_date and end_date required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not 1 <= daily_hours <= 24:
+            return Response(
+                {'detail': 'daily_hours must be between 1 and 24.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            return Response(
+                {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if end < start:
+            return Response(
+                {'detail': 'end_date must be on or after start_date.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         user_id = uid(request)
         subjects = list(Subject.objects(user_id=user_id))
         exams = list(Exam.objects(user_id=user_id))
-
-        try:
-            start = datetime.strptime(start_date, '%Y-%m-%d')
-            end = datetime.strptime(end_date, '%Y-%m-%d')
-        except ValueError:
-            return Response({'detail': 'Invalid date format.'}, status=status.HTTP_400_BAD_REQUEST)
+        assignments = list(Assignment.objects(user_id=user_id))
 
         total_days = (end - start).days + 1
-        if total_days <= 0:
-            return Response({'detail': 'end_date must be after start_date.'}, status=status.HTTP_400_BAD_REQUEST)
+        session_duration = 45
+        sessions_per_day = (daily_hours * 60) // session_duration
 
-        # Build topic pool: pending topics per subject
-        topic_pool = []
-        for s in subjects:
-            pending = [t for t in (s.topics or []) if not t.is_completed]
-            for t in pending:
-                topic_pool.append({'subject': s.name, 'subject_id': str(s.id), 'topic': t.title})
+        # Find the nearest upcoming exam for each subject.
+        exam_priority = {}
 
-        # Prioritize subjects with upcoming exams
-        exam_subjects = {}
-        for e in exams:
-            if e.subject_id:
+        for exam in exams:
+            if not exam.subject_id:
+                continue
+
+            try:
+                exam_date = datetime.strptime(
+                    exam.exam_date, '%Y-%m-%d'
+                ).date()
+            except (ValueError, TypeError):
+                continue
+
+            if exam_date < start:
+                continue
+
+            current = exam_priority.get(exam.subject_id)
+
+            if current is None or exam_date < current:
+                exam_priority[exam.subject_id] = exam_date
+
+        # Find the most urgent pending assignment for each subject.
+        assignment_priority = {}
+
+        for assignment in assignments:
+            if assignment.is_completed or not assignment.subject_id:
+                continue
+
+            subject_id = assignment.subject_id
+            due_date = None
+
+            if assignment.due_date:
                 try:
-                    exam_dt = datetime.strptime(e.exam_date, '%Y-%m-%d')
-                    if start <= exam_dt <= end + timedelta(days=14):
-                        exam_subjects[e.subject_id] = exam_dt
-                except ValueError:
+                    due_date = datetime.strptime(
+                        assignment.due_date, '%Y-%m-%d'
+                    ).date()
+                except (ValueError, TypeError):
                     pass
 
-        topic_pool.sort(key=lambda x: exam_subjects.get(x['subject_id'], datetime.max))
+            priority_rank = {
+                'high': 0,
+                'medium': 1,
+                'low': 2
+            }.get(assignment.priority, 1)
+
+            # Undated assignments are considered after dated ones.
+            key = (
+                0 if due_date and due_date <= start else 1,
+                due_date or datetime.max.date(),
+                priority_rank
+            )
+
+            if (
+                subject_id not in assignment_priority
+                or key < assignment_priority[subject_id]
+            ):
+                assignment_priority[subject_id] = key
+
+        # Build a pool containing only incomplete topics.
+        topic_pool = []
+
+        for subject in subjects:
+            for topic in subject.topics or []:
+                if topic.is_completed:
+                    continue
+
+                subject_id = str(subject.id)
+                exam_date = exam_priority.get(subject_id)
+
+                # Subjects with upcoming exams come first.
+                exam_key = exam_date or datetime.max.date()
+
+                assignment_key = assignment_priority.get(
+                    subject_id,
+                    (2, datetime.max.date(), 3)
+                )
+
+                topic_pool.append({
+                    'subject': subject.name,
+                    'subject_id': subject_id,
+                    'topic': topic.title,
+                    'topic_id': topic.id,
+                    '_exam_key': exam_key,
+                    '_assignment_key': assignment_key
+                })
+
+        # Sort by exam date, assignment urgency, then topic name.
+        topic_pool.sort(
+            key=lambda item: (
+                item['_exam_key'],
+                item['_assignment_key'],
+                item['topic'].casefold()
+            )
+        )
 
         sessions = []
-        slot_minutes = daily_hours * 60
-        session_duration = 45  # minutes per session
-        sessions_per_day = max(1, slot_minutes // session_duration)
+        topic_index = 0
 
-        topic_idx = 0
+        # Schedule each pending topic at most once.
+        # Never cycle back to already scheduled topics.
         for day_offset in range(total_days):
-            if not topic_pool:
+            if topic_index >= len(topic_pool):
                 break
-            current_date = (start + timedelta(days=day_offset)).strftime('%Y-%m-%d')
+
+            current_date = (
+                start + timedelta(days=day_offset)
+            ).isoformat()
+
             for _ in range(sessions_per_day):
-                if topic_idx >= len(topic_pool):
-                    topic_idx = 0  # cycle through topics
-                item = topic_pool[topic_idx]
+                if topic_index >= len(topic_pool):
+                    break
+
+                item = topic_pool[topic_index]
+
                 sessions.append({
                     'date': current_date,
                     'subject': item['subject'],
+                    'subject_id': item['subject_id'],
                     'topic': item['topic'],
-                    'duration': f"{session_duration} min"
+                    'topic_id': item['topic_id'],
+                    'duration': f'{session_duration} min',
+                    'duration_minutes': session_duration,
+                    'is_completed': False
                 })
-                topic_idx += 1
 
-        return Response({'sessions': sessions, 'total_days': total_days, 'sessions_per_day': sessions_per_day})
+                topic_index += 1
+
+        return Response({
+            'sessions': sessions,
+            'total_days': total_days,
+            'sessions_per_day': sessions_per_day,
+            'scheduled_topics': len(sessions),
+            'unscheduled_topics': len(topic_pool) - len(sessions),
+            'message': (
+                'Study plan generated successfully.'
+                if sessions
+                else 'No incomplete syllabus topics found.'
+            )
+        })
