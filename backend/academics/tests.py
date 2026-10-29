@@ -6,11 +6,15 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
+from rest_framework.test import APIClient
+from accounts.models import User
+from accounts.views import make_tokens
 from mongoengine.connection import get_db
 from pymongo.errors import ServerSelectionTimeoutError
 
-from .models import StudyPlan, Subject, SyllabusTopic
+from .models import Assignment, StudyPlan, Subject, SyllabusTopic
 from .views import (
+    AcademicAssistantAsk,
     GenerateStudyPlan,
     StudyInsights,
     StudyPlanListCreate,
@@ -240,6 +244,207 @@ class TopicRevisionStatusTests(SimpleTestCase):
         subject.save.assert_called_once_with()
 
 
+class AcademicAssistantTests(SimpleTestCase):
+    def setUp(self):
+        self.request = SimpleNamespace(
+            user=SimpleNamespace(id='student-1'),
+            data={'question': 'What assignments are pending?'},
+        )
+
+    @patch('academics.views.StudyPlan.objects')
+    @patch('academics.views.Exam.objects')
+    @patch('academics.views.Assignment.objects')
+    @patch('academics.views.Subject.objects')
+    def test_pending_tasks_uses_only_authenticated_student_records(self, subjects, assignments, exams, plans):
+        subjects.return_value = [SimpleNamespace(id='subject-1', name='Math', topics=[])]
+        assignments.return_value = [
+            SimpleNamespace(
+                title='Algebra worksheet', subject_id='subject-1', due_date='2026-11-02',
+                priority='high', is_completed=False,
+            ),
+            SimpleNamespace(
+                title='Already submitted', subject_id='subject-1', due_date='2026-10-20',
+                priority='medium', is_completed=True,
+            ),
+        ]
+        exams.return_value = []
+        plans.return_value = []
+
+        response = AcademicAssistantAsk().post(self.request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['intent'], 'assignments')
+        self.assertIn('Algebra worksheet', response.data['answer'])
+        self.assertIn('Math', response.data['answer'])
+        self.assertNotIn('Already submitted', response.data['answer'])
+        subjects.assert_called_once_with(user_id='student-1')
+        assignments.assert_called_once_with(user_id='student-1')
+        exams.assert_called_once_with(user_id='student-1')
+        plans.assert_called_once_with(user_id='student-1')
+
+    @patch('academics.views.StudyPlan.objects', return_value=[])
+    @patch('academics.views.Exam.objects', return_value=[])
+    @patch('academics.views.Assignment.objects', return_value=[])
+    @patch('academics.views.Subject.objects', return_value=[])
+    def test_empty_student_data_returns_clear_answer(self, subjects, assignments, exams, plans):
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('no pending assignments', response.data['answer'])
+
+    @patch('academics.views.StudyPlan.objects', return_value=[])
+    @patch('academics.views.Exam.objects', return_value=[])
+    @patch('academics.views.Assignment.objects', return_value=[])
+    @patch('academics.views.Subject.objects', return_value=[SimpleNamespace(
+        id='subject-1', name='Physics', topics=[
+            SimpleNamespace(id='done', title='Done', difficulty='easy', is_completed=True, status='completed', revision_required=False),
+            SimpleNamespace(id='pending', title='Pending topic', difficulty='hard', is_completed=False, status='in_progress', revision_required=False),
+        ],
+    )])
+    def test_progress_answer_uses_saved_topic_completion(self, subjects, assignments, exams, plans):
+        self.request.data['question'] = 'How much syllabus have I completed?'
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.data['intent'], 'progress')
+        self.assertIn('1 of 2 topics (50%)', response.data['answer'])
+        self.assertIn('Physics: 1/2', response.data['answer'])
+
+    @patch('academics.views.StudyPlan.objects', return_value=[SimpleNamespace(
+        title='Current plan', start_date=date.today().isoformat(), end_date=date.today().isoformat(),
+        daily_hours='2', created_at=date.today(), sessions=[
+            {'date': date.today().isoformat(), 'topic': 'Arrays', 'subject': 'CS', 'topic_id': 'arrays', 'is_completed': False},
+            {'date': date.today().isoformat(), 'topic': 'Old completed session', 'is_completed': True},
+        ],
+    )])
+    @patch('academics.views.Exam.objects', return_value=[])
+    @patch('academics.views.Assignment.objects', return_value=[])
+    @patch('academics.views.Subject.objects', return_value=[])
+    def test_schedule_answer_skips_completed_sessions(self, subjects, assignments, exams, plans):
+        self.request.data['question'] = 'What is in my study schedule?'
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.data['intent'], 'schedule')
+        self.assertIn('Arrays', response.data['answer'])
+        self.assertNotIn('Old completed session', response.data['answer'])
+
+    @patch('academics.views.StudyPlan.objects', return_value=[SimpleNamespace(
+        title='Midterm plan', start_date='2026-11-01', end_date='2026-11-05', daily_hours='2',
+        created_at=date.today(), sessions=[],
+    )])
+    @patch('academics.views.Exam.objects', return_value=[])
+    @patch('academics.views.Assignment.objects', return_value=[])
+    @patch('academics.views.Subject.objects', return_value=[])
+    def test_schedule_change_question_explains_supported_edits_without_mutating(self, subjects, assignments, exams, plans):
+        self.request.data['question'] = 'what can i change in my schedule'
+        saved_plan = plans.return_value[0]
+        saved_plan.save = MagicMock()
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.data['intent'], 'schedule_change')
+        self.assertIn('Reschedule option', response.data['answer'])
+        self.assertIn('start date, end date, or daily study hours', response.data['answer'])
+        self.assertIn('I have not changed your plan', response.data['answer'])
+        saved_plan.save.assert_not_called()
+
+    @patch('academics.views.StudyPlan.objects', return_value=[])
+    @patch('academics.views.Exam.objects', return_value=[SimpleNamespace(
+        title='Final exam', subject_id='subject-1', exam_date=(date.today() + timedelta(days=3)).isoformat()
+    )])
+    @patch('academics.views.Assignment.objects', return_value=[SimpleNamespace(
+        title='Lab report', subject_id='subject-1', due_date=(date.today() + timedelta(days=1)).isoformat(),
+        priority='high', is_completed=False,
+    )])
+    @patch('academics.views.Subject.objects', return_value=[SimpleNamespace(id='subject-1', name='Software', topics=[
+        SimpleNamespace(id='topic-1', title='Testing', difficulty='hard', is_completed=False,
+                        status='not_started', revision_required=True),
+    ])])
+    def test_priority_wording_compares_real_deadlines_and_topic_score(self, subjects, assignments, exams, plans):
+        for question in ('What should I prefer first?', 'what should i study first', 'Which assignment is most urgent?'):
+            self.request.data['question'] = question
+            response = AcademicAssistantAsk().post(self.request)
+            self.assertEqual(response.data['intent'], 'priority')
+            self.assertIn('Start with assignment “Lab report”', response.data['answer'])
+            self.assertIn('Final exam', response.data['answer'])
+            self.assertIn('Testing', response.data['answer'])
+            self.assertIn('documented Study Planner score', response.data['answer'])
+        self.request.data['question'] = 'what can i change in my schedule'
+        schedule_response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(schedule_response.data['intent'], 'schedule_change')
+        self.assertNotEqual(schedule_response.data['answer'], response.data['answer'])
+
+    @patch('academics.views.StudyPlan.objects', return_value=[])
+    @patch('academics.views.Exam.objects', return_value=[])
+    @patch('academics.views.Assignment.objects', return_value=[])
+    @patch('academics.views.Subject.objects', return_value=[])
+    def test_spelling_and_punctuation_variations_match_schedule_intent(self, subjects, assignments, exams, plans):
+        self.request.data['question'] = 'WhAt can I change in my schedual?!'
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.data['intent'], 'schedule_change')
+        self.assertIn('no saved study plan', response.data['answer'])
+
+    @patch('academics.views.StudyPlan.objects', return_value=[])
+    @patch('academics.views.Exam.objects', return_value=[])
+    @patch('academics.views.Assignment.objects', return_value=[])
+    @patch('academics.views.Subject.objects', return_value=[])
+    def test_unsupported_question_gets_clarification_instead_of_overview(self, subjects, assignments, exams, plans):
+        self.request.data['question'] = 'Tell me a joke.'
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.data['intent'], 'unsupported')
+        self.assertIn('could not match', response.data['answer'])
+        self.assertNotIn('Your overview:', response.data['answer'])
+
+    @patch('academics.views.StudyPlan.objects', return_value=[])
+    @patch('academics.views.Exam.objects', return_value=[])
+    @patch('academics.views.Assignment.objects', return_value=[SimpleNamespace(
+        title='Untimed assignment', subject_id=None, due_date=None, priority='medium', is_completed=False
+    )])
+    @patch('academics.views.Subject.objects', return_value=[])
+    def test_missing_assignment_deadline_is_not_invented(self, subjects, assignments, exams, plans):
+        self.request.data['question'] = 'What is my next assignment deadline?'
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.data['intent'], 'assignments')
+        self.assertIn('due date unavailable', response.data['answer'])
+        self.assertIn('cannot rank them by deadline', response.data['answer'])
+
+    def test_empty_or_oversized_questions_are_rejected(self):
+        self.request.data['question'] = '  '
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.status_code, 400)
+        self.request.data['question'] = 'x' * 501
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.status_code, 400)
+
+    @patch('academics.views.StudyPlan.objects', return_value=[])
+    @patch('academics.views.Exam.objects', return_value=[
+        SimpleNamespace(title='Final', subject_id=None, exam_date=(date.today() + timedelta(days=3)).isoformat()),
+        SimpleNamespace(title='Past exam', subject_id=None, exam_date=(date.today() - timedelta(days=1)).isoformat()),
+        SimpleNamespace(title='Invalid date', subject_id=None, exam_date='not-a-date'),
+    ])
+    @patch('academics.views.Assignment.objects', return_value=[])
+    @patch('academics.views.Subject.objects', return_value=[])
+    def test_exam_answer_lists_only_upcoming_valid_dates(self, subjects, assignments, exams, plans):
+        self.request.data['question'] = 'Which exam is coming up next?'
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.data['intent'], 'exams')
+        self.assertIn('Final', response.data['answer'])
+        self.assertNotIn('Past exam', response.data['answer'])
+        self.assertNotIn('Invalid date', response.data['answer'])
+
+    @patch('academics.views.StudyPlan.objects', return_value=[])
+    @patch('academics.views.Exam.objects', return_value=[])
+    @patch('academics.views.Assignment.objects', return_value=[])
+    @patch('academics.views.Subject.objects', return_value=[SimpleNamespace(
+        id='subject-1', name='History', topics=[SimpleNamespace(is_completed=True, status='completed')]
+    )])
+    def test_general_question_returns_data_backed_overview(self, subjects, assignments, exams, plans):
+        self.request.data['question'] = 'Can I see my overview?'
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.data['intent'], 'overview')
+        self.assertIn('1 subject(s)', response.data['answer'])
+        self.assertIn('1 of 1 topics complete', response.data['answer'])
+
+    @patch('academics.views.Subject.objects', side_effect=ServerSelectionTimeoutError('database unavailable'))
+    def test_database_unavailable_returns_service_unavailable(self, subjects):
+        response = AcademicAssistantAsk().post(self.request)
+        self.assertEqual(response.status_code, 503)
+
+
 class StudyPlanSaveTests(SimpleTestCase):
     def test_duplicate_session_ids_are_rejected(self):
         request = SimpleNamespace(
@@ -450,3 +655,54 @@ class LiveMongoStudyPlannerTests(SimpleTestCase):
         )
         self.assertEqual(foreign_patch_response.status_code, 404)
         self.assertTrue(Subject.objects.get(id=self.subject.id, user_id=self.user_id).topics[0].is_completed)
+
+    def test_academic_assistant_reads_saved_records_and_isolates_students(self):
+        user = User(
+            username=f'assistant-{uuid4()}@example.test',
+            email=f'assistant-{uuid4()}@example.test',
+        ).save()
+        other_user = User(
+            username=f'assistant-{uuid4()}@example.test',
+            email=f'assistant-{uuid4()}@example.test',
+        ).save()
+        user_id = str(user.id)
+        other_user_id = str(other_user.id)
+        own_subject = Subject(user_id=user_id, name='My subject').save()
+        other_subject = Subject(
+            user_id=other_user_id,
+            name='Another student subject',
+        ).save()
+        Assignment(
+            user_id=user_id,
+            subject_id=str(own_subject.id),
+            title='My pending assignment',
+            due_date=(date.today() + timedelta(days=2)).isoformat(),
+            priority='high',
+        ).save()
+        Assignment(
+            user_id=other_user_id,
+            subject_id=str(other_subject.id),
+            title='Private foreign assignment',
+            due_date=(date.today() + timedelta(days=1)).isoformat(),
+            priority='high',
+        ).save()
+
+        client = APIClient()
+        unauthorized = client.post('/api/academics/assistant/ask/', {'question': 'What is my progress?'}, format='json')
+        self.assertEqual(unauthorized.status_code, 403)
+        access_token, _ = make_tokens(user)
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+        response = client.post('/api/academics/assistant/ask/', {
+            'question': 'Which assignments are pending?'
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('My pending assignment', response.data['answer'])
+        self.assertNotIn('Private foreign assignment', response.data['answer'])
+        other_access_token, _ = make_tokens(other_user)
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {other_access_token}')
+        other_response = client.post('/api/academics/assistant/ask/', {
+            'question': 'Which assignments are pending?'
+        }, format='json')
+        self.assertEqual(other_response.status_code, 200)
+        self.assertIn('Private foreign assignment', other_response.data['answer'])
+        self.assertNotIn('My pending assignment', other_response.data['answer'])

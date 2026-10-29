@@ -31,6 +31,51 @@ document.querySelectorAll('.sidebar-link').forEach(link => {
   });
 });
 
+/* ===== ACADEMIC ASSISTANT ===== */
+function addAssistantMessage(role, text) {
+  const message = document.createElement('div');
+  message.className = `assistant-message assistant-message--${role}`;
+  message.textContent = text;
+  document.getElementById('assistantMessages').appendChild(message);
+  message.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+document.getElementById('assistantForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const input = document.getElementById('assistantQuestion');
+  const button = document.getElementById('assistantSubmit');
+  const question = input.value.trim();
+  if (!question || button.disabled) return;
+
+  addAssistantMessage('user', question);
+  input.value = '';
+  input.disabled = true;
+  button.disabled = true;
+  button.textContent = 'Checking…';
+  try {
+    const result = await Auth.apiFetch('/academics/assistant/ask/', {
+      method: 'POST',
+      body: JSON.stringify({ question })
+    });
+    addAssistantMessage('assistant', result?.answer || 'I could not load your academic data just now. Please try again.');
+  } catch {
+    addAssistantMessage('assistant', 'I could not reach the assistant just now. Please try again.');
+  } finally {
+    input.disabled = false;
+    button.disabled = false;
+    button.textContent = 'Ask';
+    input.focus();
+  }
+});
+
+document.querySelectorAll('[data-assistant-question]').forEach(button => {
+  button.addEventListener('click', () => {
+    const input = document.getElementById('assistantQuestion');
+    input.value = button.dataset.assistantQuestion;
+    input.focus();
+  });
+});
+
 /* Sidebar toggle (mobile) */
 document.getElementById('sidebarToggle').addEventListener('click', () => {
   document.getElementById('sidebar').classList.toggle('open');

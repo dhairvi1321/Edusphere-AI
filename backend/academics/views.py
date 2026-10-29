@@ -1,5 +1,6 @@
 import uuid
 import os
+import re
 from functools import wraps
 from mongoengine.errors import DoesNotExist, ValidationError as MongoValidationError
 from pymongo.errors import PyMongoError
@@ -26,7 +27,7 @@ def handle_database_errors(view_method):
             return view_method(self, request, *args, **kwargs)
         except PyMongoError:
             return Response(
-                {'detail': 'Study planner storage is temporarily unavailable. Please try again.'},
+                {'detail': 'Student data storage is temporarily unavailable. Please try again.'},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
     return wrapped
@@ -1016,6 +1017,287 @@ class StudyInsights(APIView):
             'today_total': len(today_sessions),
             'today_done': today_done,
         })
+
+
+class AcademicAssistantAsk(APIView):
+    """Answer common academic questions from the authenticated student's saved records."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    @handle_database_errors
+    def post(self, request):
+        question = request.data.get('question', '')
+        if not isinstance(question, str) or not question.strip():
+            return Response({'detail': 'question is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(question.strip()) > 500:
+            return Response({'detail': 'question must be 500 characters or fewer.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(_answer_academic_question(question.strip(), uid(request)))
+
+
+def _answer_academic_question(question, user_id):
+    """Build a data-grounded answer for a supported academic question."""
+    subjects = list(Subject.objects(user_id=user_id))
+    assignments = list(Assignment.objects(user_id=user_id))
+    exams = list(Exam.objects(user_id=user_id))
+    plans = list(StudyPlan.objects(user_id=user_id))
+    subject_names = {str(subject.id): subject.name for subject in subjects}
+    today = date.today()
+
+    intent = _academic_question_intent(question)
+    if intent == 'progress':
+        topics = [topic for subject in subjects for topic in (subject.topics or [])]
+        completed = sum(1 for topic in topics if topic.is_completed or getattr(topic, 'status', None) == 'completed')
+        remaining = len(topics) - completed
+        if not topics:
+            answer = 'You have no syllabus topics saved yet, so there is no topic progress to report. Add subjects and topics to track preparation.'
+        else:
+            answer = f'You have completed {completed} of {len(topics)} topics ({round(completed / len(topics) * 100)}%); {remaining} remain.'
+            incomplete = [
+                {'title': topic.title, 'subject': subject.name, 'is_completed': topic.is_completed,
+                 'difficulty': topic.difficulty, 'status': _topic_status(topic),
+                 'revision_required': getattr(topic, 'revision_required', False)}
+                for subject in subjects for topic in (subject.topics or [])
+                if not topic.is_completed and _topic_status(topic) != 'completed'
+            ]
+            details = [f"{subject.name}: {sum(1 for topic in (subject.topics or []) if topic.is_completed or getattr(topic, 'status', None) == 'completed')}/{len(subject.topics or [])} topics complete" for subject in subjects if subject.topics]
+            if details:
+                answer += ' ' + '; '.join(details[:5]) + '.'
+            ranked = _build_session_pool(user_id)
+            if incomplete:
+                by_key = {(item['subject'], item['topic']): item for item in ranked}
+                ordered = sorted(incomplete, key=lambda topic: _topic_priority_key(
+                    by_key.get((topic['subject'], topic['title']), {'_priority_score': 0, 'topic': topic['title'], 'subject': topic['subject']})
+                ))
+                answer += ' Incomplete topics to work on next: ' + '; '.join(
+                    f"{topic['title']} ({topic['subject']})" for topic in ordered[:5]
+                ) + '.'
+            else:
+                answer += ' All saved topics are complete.'
+        if any(term in _normalize_academic_question(question) for term in ('improve', 'improvement', 'next step', 'prepare')) and topics:
+            answer += ' A useful next step is to work on the first incomplete topic listed above, especially if it has a linked deadline or revision flag.'
+    elif intent == 'assignments':
+        pending = [item for item in assignments if not item.is_completed]
+        pending.sort(key=lambda item: (_assistant_date(item.due_date) or date.max, item.title.casefold()))
+        if not pending:
+            answer = 'You have no pending assignments saved.'
+        else:
+            rows = []
+            for item in pending[:5]:
+                subject = subject_names.get(item.subject_id or '', '')
+                due_day = _assistant_date(item.due_date)
+                due = f", {_deadline_phrase(due_day, today)}" if due_day else ', due date unavailable'
+                priority = f" ({item.priority} priority)" if item.priority else ''
+                rows.append(f"{item.title}{' — ' + subject if subject else ''}{due}{priority}")
+            answer = f'You have {len(pending)} pending assignment(s). ' + '; '.join(rows) + (f"; and {len(pending) - 5} more." if len(pending) > 5 else '.')
+            if not any(_assistant_date(item.due_date) for item in pending):
+                answer += ' None of these assignments has a usable due date, so I cannot rank them by deadline.'
+    elif intent == 'exams':
+        upcoming = []
+        for item in exams:
+            exam_day = _assistant_date(item.exam_date)
+            if not exam_day:
+                continue
+            if exam_day >= today:
+                upcoming.append((exam_day, item))
+        upcoming.sort(key=lambda row: (row[0], row[1].title.casefold()))
+        if not upcoming:
+            answer = 'You have no upcoming exams recorded.'
+        else:
+            rows = [f"{item.title}{' — ' + subject_names[item.subject_id] if item.subject_id in subject_names else ''}, {_deadline_phrase(day, today)} ({day.isoformat()})" for day, item in upcoming[:5]]
+            answer = f'You have {len(upcoming)} upcoming exam(s). ' + '; '.join(rows) + (f"; and {len(upcoming) - 5} more." if len(upcoming) > 5 else '.')
+            answer += ' The next recorded exam is ' + rows[0] + '.'
+    elif intent in ('schedule', 'schedule_change'):
+        answer = _schedule_assistant_answer(question, user_id, subjects, assignments, exams, plans, today, intent == 'schedule_change')
+    elif intent == 'priority':
+        answer = _priority_assistant_answer(user_id, subjects, assignments, exams, plans, today)
+    elif intent == 'overview':
+        pending_count = sum(1 for item in assignments if not item.is_completed)
+        total_topics = sum(len(subject.topics or []) for subject in subjects)
+        completed_topics = sum(1 for subject in subjects for topic in (subject.topics or []) if topic.is_completed or getattr(topic, 'status', None) == 'completed')
+        answer = f'Your overview: {len(subjects)} subject(s), {completed_topics} of {total_topics} topics complete, and {pending_count} pending assignment(s). Ask about schedule changes, what to study first, progress, assignments, or exams.'
+    else:
+        answer = ('I could not match that to a supported question. Try asking what you can change in your schedule, '
+                  'what to study first, which assignments or exams are next, or how much syllabus you have completed.')
+
+    return {'question': question, 'answer': answer, 'intent': intent}
+
+
+_ASSISTANT_TYPO_FIXES = {
+    'schedual': 'schedule', 'schedul': 'schedule', 'shedule': 'schedule', 'timetabel': 'timetable',
+    'preffer': 'prefer', 'prefr': 'prefer', 'preferr': 'prefer', 'asignment': 'assignment',
+    'assignement': 'assignment', 'examm': 'exam', 'progres': 'progress', 'prioroty': 'priority',
+}
+
+
+def _normalize_academic_question(question):
+    text = re.sub(r'[^a-z0-9]+', ' ', question.casefold()).strip()
+    tokens = [_ASSISTANT_TYPO_FIXES.get(token, token) for token in text.split()]
+    return ' '.join(tokens)
+
+
+def _academic_question_intent(question):
+    text = _normalize_academic_question(question)
+    has_schedule = any(term in text for term in ('schedule', 'timetable', 'study plan', 'study time', 'time to prepare'))
+    has_change = any(term in text for term in ('change', 'adjust', 'edit', 'modify', 'improve', 'reschedule', 'move'))
+    if has_schedule and has_change:
+        return 'schedule_change'
+    if any(term in text for term in ('prefer', 'first', 'priority', 'prioritize', 'urgent', 'urgency', 'most important', 'what next')):
+        return 'priority'
+    if any(term in text for term in ('syllabus', 'progress', 'topic', 'completed', 'completion', 'preparation', 'improve')):
+        return 'progress'
+    if any(term in text for term in ('assignment', 'task', 'pending', 'deadline', 'due')):
+        return 'assignments'
+    if any(term in text for term in ('exam', 'test', 'assessment')):
+        return 'exams'
+    if has_schedule or any(term in text for term in ('what should i study today', 'study today', 'topic next')):
+        return 'schedule'
+    if any(term in text for term in ('overview', 'summary', 'how am i doing')):
+        return 'overview'
+    return 'unsupported'
+
+
+def _assistant_date(value):
+    try:
+        return datetime.strptime(value, '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _deadline_phrase(deadline, today):
+    days = (deadline - today).days
+    if days < 0:
+        return f'overdue by {abs(days)} day(s)'
+    if days == 0:
+        return 'due today'
+    return f'due in {days} day(s)'
+
+
+def _topic_reason(topic):
+    bits = []
+    if topic.get('deadline_days') is None:
+        bits.append('no linked deadline')
+    else:
+        bits.append(f"linked deadline in {topic['deadline_days']} day(s)")
+    bits.append('already in progress' if topic.get('status') == 'in_progress' else 'not started')
+    if topic.get('revision_required'):
+        bits.append('flagged for revision')
+    return ', '.join(bits)
+
+
+def _schedule_assistant_answer(question, user_id, subjects, assignments, exams, plans, today, asking_to_change):
+    latest = max(plans, key=lambda plan: str(getattr(plan, 'created_at', '') or ''), default=None)
+    upcoming_sessions = [
+        (item.get('date') or '', item)
+        for plan in plans for item in (plan.sessions or [])
+        if not item.get('is_completed') and (item.get('date') or '') >= today.isoformat()
+    ]
+    upcoming_sessions.sort(key=lambda row: (row[0], row[1].get('start_time', '')))
+    pool = _build_session_pool(user_id)
+    scheduled_ids = {
+        item.get('topic_id') for plan in plans for item in (plan.sessions or [])
+        if not item.get('is_completed') and item.get('date', '') >= today.isoformat()
+    }
+    unscheduled = [topic for topic in pool if not topic.get('topic_id') or topic.get('topic_id') not in scheduled_ids]
+    parts = []
+    if latest:
+        parts.append(f"Your latest saved plan is “{latest.title}” ({latest.start_date} to {latest.end_date}), set to {latest.daily_hours} study hour(s) per day.")
+        try:
+            first_day = datetime.strptime(latest.start_date, '%Y-%m-%d').date()
+            last_day = datetime.strptime(latest.end_date, '%Y-%m-%d').date()
+            hours = int(latest.daily_hours)
+            if last_day >= first_day and hours > 0:
+                day_count = (last_day - first_day).days + 1
+                parts.append(f"That plan's configured capacity is up to {hours * 60} minutes per day across {day_count} day(s) ({hours * 60 * day_count} minutes total); this is the plan limit, not a separate availability calendar.")
+        except (TypeError, ValueError):
+            parts.append('The saved plan dates or daily-hour value are not valid enough to calculate its capacity.')
+    else:
+        parts.append('You have no saved study plan yet.')
+    if upcoming_sessions:
+        session_rows = [f"{item.get('topic') or 'Study session'}{(' in ' + item.get('subject', '')) if item.get('subject') else ''} on {day}" for day, item in upcoming_sessions[:4]]
+        parts.append(f"There are {len(upcoming_sessions)} upcoming incomplete saved session(s): " + '; '.join(session_rows) + '.')
+    else:
+        parts.append('There are no upcoming incomplete sessions in your saved plans.')
+    if unscheduled:
+        parts.append('Highest-ranked incomplete topics not already scheduled: ' + '; '.join(
+            f"{item['topic']} ({item['subject']}, planner score {item['_priority_score']:.3f}; {_topic_reason(item)})"
+            for item in unscheduled[:3]
+        ) + '.')
+    else:
+        parts.append('No unscheduled incomplete syllabus topics with saved IDs were found.')
+    deadline_rows = []
+    for item in assignments:
+        if item.is_completed or not item.due_date:
+            continue
+        due = _assistant_date(item.due_date)
+        if due:
+            deadline_rows.append((due, f"assignment “{item.title}” {_deadline_phrase(due, today)}"))
+    for item in exams:
+        due = _assistant_date(item.exam_date)
+        if due and due >= today:
+            deadline_rows.append((due, f"exam “{item.title}” {_deadline_phrase(due, today)}"))
+    deadline_rows.sort(key=lambda row: row[0])
+    if deadline_rows:
+        parts.append('Relevant saved deadlines: ' + '; '.join(text for _, text in deadline_rows[:3]) + '.')
+    else:
+        parts.append('No usable upcoming assignment or exam dates are saved, so deadline pressure cannot be estimated.')
+    if asking_to_change:
+        if latest:
+            parts.append('In the app, use that plan’s Reschedule option to adjust its start date, end date, or daily study hours. The app previews replacement sessions and saves them only after confirmation; I have not changed your plan.')
+        else:
+            parts.append('You can set the date range and daily study hours when generating a plan. This answer is a recommendation only and did not create or change a plan.')
+    else:
+        parts.append('Use the highest-ranked unscheduled topic as a candidate for your next session; the planner score follows the documented topic formula and is not a deadline-day count.')
+    return ' '.join(parts)
+
+
+def _priority_assistant_answer(user_id, subjects, assignments, exams, plans, today):
+    dated = []
+    pending = [item for item in assignments if not item.is_completed]
+    for item in pending:
+        due = _assistant_date(item.due_date)
+        if due:
+            dated.append((due, 0, item.priority != 'high', item.title.casefold(), 'assignment', item))
+    upcoming_exams = []
+    for item in exams:
+        due = _assistant_date(item.exam_date)
+        if due and due >= today:
+            upcoming_exams.append((due, item))
+            dated.append((due, 1, False, item.title.casefold(), 'exam', item))
+    dated.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+    ranked_topics = _build_session_pool(user_id)
+    parts = []
+    if dated:
+        due, _, _, _, kind, item = dated[0]
+        parts.append(f"Start with {kind} “{item.title}”: it is {_deadline_phrase(due, today)} ({due.isoformat()}). This recommendation compares recorded assignment and exam dates only.")
+        comparison = [f"{row[4]} “{row[5].title}” {_deadline_phrase(row[0], today)}" for row in dated[:4]]
+        parts.append('Closest recorded deadlines: ' + '; '.join(comparison) + '.')
+    elif pending:
+        parts.append(f"“{pending[0].title}” is pending, but its due date is missing or invalid. I cannot compare it reliably with an exam deadline; add a due date before ranking it by urgency.")
+    elif upcoming_exams:
+        due, item = upcoming_exams[0]
+        parts.append(f"Prepare for exam “{item.title}”, {_deadline_phrase(due, today)} ({due.isoformat()}).")
+    else:
+        parts.append('No dated pending assignments or upcoming exams are available to compare.')
+
+    if ranked_topics:
+        top = ranked_topics[0]
+        parts.append(f"Among incomplete syllabus topics, “{top['topic']}” in {top['subject']} is highest by the documented Study Planner score ({top['_priority_score']:.3f}/1.000; {_topic_reason(top)}). Topic scores rank topics against other topics; they are not directly comparable to days until a task deadline.")
+        matching_sessions = [
+            (session.get('date', ''), session)
+            for plan in plans for session in (plan.sessions or [])
+            if session.get('topic_id') == top.get('topic_id') and not session.get('is_completed')
+            and session.get('date', '') >= today.isoformat()
+        ]
+        if matching_sessions:
+            day, _ = min(matching_sessions, key=lambda row: row[0])
+            parts.append(f"Practical next step: follow its saved session on {day}.")
+        else:
+            parts.append('Practical next step: schedule that topic in your plan; no saved upcoming session for it was found.')
+    else:
+        parts.append('No incomplete syllabus topics are available to rank with the Study Planner formula.')
+    undated = [item.title for item in pending if not _assistant_date(item.due_date)]
+    if undated:
+        parts.append('Assignments without a usable due date: ' + ', '.join(undated[:3]) + '.')
+    return ' '.join(parts)
 
 
 class GenerateStudyPlan(APIView):
