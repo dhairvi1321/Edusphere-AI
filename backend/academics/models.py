@@ -1,4 +1,4 @@
-from mongoengine import Document, StringField, BooleanField, DateField, ListField, EmbeddedDocument, EmbeddedDocumentField, DictField
+from mongoengine import Document, StringField, BooleanField, DateField, DateTimeField, IntField, ListField, EmbeddedDocument, EmbeddedDocumentField, DictField
 from datetime import datetime, date
 
 
@@ -55,3 +55,52 @@ class StudyPlan(Document):
     daily_hours = StringField(default='2')
     sessions = ListField(DictField(), default=list)  # [{date, subject, topic, duration}]
     created_at = DateField(default=datetime.utcnow)
+
+
+class QuizQuestion(EmbeddedDocument):
+    question_id = StringField(required=True)
+    text = StringField(required=True, max_length=1000)
+    options = ListField(StringField(max_length=500), min_length=2, max_length=6)
+    correct_index = IntField(required=True, min_value=0, max_value=5)
+    explanation = StringField(default='', max_length=2000)
+    topic_id = StringField(default=None)  # selected syllabus topic this question covers
+    difficulty = StringField(default='medium', choices=('easy', 'medium', 'hard'))
+
+
+class TopicQuiz(Document):
+    meta = {
+        'collection': 'topic_quizzes',
+        'indexes': ['user_id', ('user_id', 'subject_id', 'topic_id')],
+    }
+
+    user_id = StringField(required=True)
+    subject_id = StringField(required=True)
+    topic_id = StringField(required=True)  # first topic, retained for existing records
+    topic_ids = ListField(StringField(), default=list)
+    topic_names = ListField(StringField(), default=list)
+    title = StringField(required=True, max_length=200)
+    source = StringField(default='author_created', choices=('author_created', 'question_bank', 'openai_generated'))
+    selection_key = StringField(default=None)
+    difficulty = StringField(default='medium', choices=('easy', 'medium', 'hard'))
+    questions = ListField(EmbeddedDocumentField(QuizQuestion), default=list)
+    created_at = DateTimeField(default=datetime.utcnow)
+
+
+class QuizAttempt(Document):
+    meta = {
+        'collection': 'quiz_attempts',
+        'indexes': ['user_id', ('user_id', 'quiz_id', '-created_at')],
+    }
+
+    user_id = StringField(required=True)
+    quiz_id = StringField(required=True)
+    subject_id = StringField(required=True)
+    topic_id = StringField(required=True)
+    topic_ids = ListField(StringField(), default=list)
+    quiz_title = StringField(required=True)
+    answers = ListField(DictField(), default=list)
+    score = IntField(required=True, min_value=0, max_value=100)
+    correct_count = IntField(required=True, min_value=0)
+    incorrect_count = IntField(required=True, min_value=0)
+    total_questions = IntField(required=True, min_value=0)
+    created_at = DateTimeField(default=datetime.utcnow)

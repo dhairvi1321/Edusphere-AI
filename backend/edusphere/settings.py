@@ -65,6 +65,17 @@ STATIC_URL = '/static/'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'uploads'
 
+# Temporary quiz syllabus uploads are limited server-side; configure in bytes.
+try:
+    QUIZ_SYLLABUS_MAX_FILE_SIZE = int(os.environ.get('QUIZ_SYLLABUS_MAX_FILE_SIZE', str(10 * 1024 * 1024)))
+except ValueError:
+    QUIZ_SYLLABUS_MAX_FILE_SIZE = 10 * 1024 * 1024
+if QUIZ_SYLLABUS_MAX_FILE_SIZE < 1:
+    QUIZ_SYLLABUS_MAX_FILE_SIZE = 10 * 1024 * 1024
+
+# AI quiz generation is intentionally disabled while the local integration is under development.
+QUIZ_AI_GENERATION_ENABLED = False
+
 # DRF
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

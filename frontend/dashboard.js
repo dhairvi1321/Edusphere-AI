@@ -136,6 +136,664 @@ function populateSubjectSelects() {
   document.getElementById('examSubject').innerHTML = opts;
 }
 
+/* ===== TOPIC QUIZZES ===== */
+const AI_QUIZ_GENERATION_ENABLED = false;
+let currentTopicQuiz = null;
+let quizAvailability = null;
+let quizQuestionIndex = 0;
+let quizAnswers = {};
+let quizSubmitting = false;
+let bankQuizCreating = false;
+let syllabusQuizGenerating = false;
+let savedQuizLoading = false;
+let activeQuizSyllabus = null;
+let pendingQuizSyllabusFile = null;
+
+function fillQuizSubjectSelect() {
+  const select = document.getElementById('quizSubjectSelect');
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = subjects.length ? 'Choose a subject' : 'No subjects available';
+  select.replaceChildren(placeholder);
+  subjects.forEach(subject => {
+    const option = document.createElement('option');
+    option.value = subject.id;
+    option.textContent = subject.name;
+    select.appendChild(option);
+  });
+  select.disabled = !subjects.length;
+}
+
+function resetQuizSelection(message = 'Choose a subject and topic to find quizzes.') {
+  quizAvailability = null;
+  currentTopicQuiz = null;
+  document.getElementById('topicQuizList').replaceChildren();
+  document.getElementById('topicQuizDetail').replaceChildren();
+  document.getElementById('quizAttemptHistory').replaceChildren();
+  document.getElementById('quizListStatus').textContent = message;
+}
+
+function selectedQuizTopicIds() {
+  return [...document.querySelectorAll('#quizTopicCheckboxes input[type="checkbox"]:checked')].map(input => input.value);
+}
+
+function updateQuizSetupSummary() {
+  const subject = subjects.find(item => item.id === document.getElementById('quizSubjectSelect').value);
+  const topicIds = selectedQuizTopicIds();
+  const count = Number(document.getElementById('quizQuestionCount').value);
+  const validCount = Number.isInteger(count) && count >= 1 && count <= 20;
+  document.getElementById('quizTopicSelectionCount').textContent = topicIds.length ? `${topicIds.length} topic${topicIds.length === 1 ? '' : 's'} selected` : (subject?.topics?.length ? 'Select one or more topics' : (subject ? 'This subject has no topics yet' : 'Select a subject first'));
+  document.getElementById('quizSummarySubject').textContent = `Subject: ${subject?.name || '—'}`;
+  document.getElementById('quizSummaryTopics').textContent = `Topics selected: ${topicIds.length}`;
+  document.getElementById('quizSummaryCount').textContent = `Questions requested: ${validCount ? count : '—'}`;
+  const difficulty = document.getElementById('quizDifficulty').value;
+  document.getElementById('quizSummaryDifficulty').textContent = `Difficulty: ${difficulty.charAt(0).toUpperCase()}${difficulty.slice(1)}`;
+  const hasSelection = Boolean(subject && topicIds.length);
+  const countError = document.getElementById('quizCountError');
+  countError.textContent = !validCount ? 'Enter a whole number from 1 to 20.' :
+    (hasSelection && !activeQuizSyllabus && quizAvailability !== null && count > quizAvailability ? `Only ${quizAvailability} question(s) at this difficulty are saved. Lower the count or upload a syllabus.` : '');
+  document.getElementById('createBankQuizBtn').disabled = bankQuizCreating || Boolean(activeQuizSyllabus) || !hasSelection || !validCount || quizAvailability === null || count > quizAvailability;
+  document.getElementById('generateTopicQuizBtn').disabled = !AI_QUIZ_GENERATION_ENABLED || syllabusQuizGenerating || !activeQuizSyllabus || !hasSelection || !validCount;
+  document.getElementById('loadTopicQuizzesBtn').disabled = savedQuizLoading || !hasSelection;
+}
+
+function renderQuizTopicCheckboxes(topics) {
+  const container = document.getElementById('quizTopicCheckboxes');
+  container.replaceChildren();
+  if (!topics.length) {
+    const empty = document.createElement('p');
+    empty.className = 'quiz-empty-state';
+    empty.textContent = document.getElementById('quizSubjectSelect').value
+      ? 'No syllabus topics are saved for this subject yet. Add topics in Subjects or upload a syllabus.'
+      : 'Choose a subject to see its syllabus topics.';
+    container.appendChild(empty);
+    return;
+  }
+  topics.forEach(topic => {
+    const label = document.createElement('label');
+    label.className = 'quiz-topic-option';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = topic.id;
+    checkbox.dataset.topicName = topic.title;
+    checkbox.addEventListener('change', () => {
+      label.classList.toggle('is-selected', checkbox.checked);
+      updateQuizSetupSummary();
+      refreshQuizAvailability();
+    });
+    const title = document.createElement('span');
+    title.textContent = topic.unit ? `${topic.title} · ${topic.unit}` : topic.title;
+    label.append(checkbox, title);
+    container.appendChild(label);
+  });
+}
+
+async function refreshQuizAvailability() {
+  const subjectId = document.getElementById('quizSubjectSelect').value;
+  const topicIds = selectedQuizTopicIds();
+  const availability = document.getElementById('quizAvailableCount');
+  quizAvailability = null;
+  updateQuizSetupSummary();
+  if (!subjectId || !topicIds.length) {
+    availability.textContent = 'Choose topic(s) to check availability';
+    return;
+  }
+  if (activeQuizSyllabus) {
+    quizAvailability = 0;
+    availability.textContent = 'Uploaded topics are not saved in the question bank';
+    updateQuizSetupSummary();
+    return;
+  }
+  availability.textContent = 'Checking saved questions…';
+  const difficulty = document.getElementById('quizDifficulty').value;
+  const query = new URLSearchParams({ subject_id: subjectId, topic_ids: topicIds.join(','), difficulty });
+  const result = await Auth.apiFetch(`/academics/quizzes/availability/?${query}`);
+  if (subjectId !== document.getElementById('quizSubjectSelect').value ||
+      topicIds.join(',') !== selectedQuizTopicIds().join(',') ||
+      difficulty !== document.getElementById('quizDifficulty').value) return;
+  if (!result) {
+    availability.textContent = 'Could not check saved question count';
+    updateQuizSetupSummary();
+    return;
+  }
+  quizAvailability = result.available_count;
+  availability.textContent = quizAvailability
+    ? `${quizAvailability} unique question${quizAvailability === 1 ? '' : 's'} available in the saved bank`
+    : '0 saved questions. Ask an instructor to add questions or try syllabus AI generation.';
+  if (!quizAvailability) {
+    document.getElementById('quizListStatus').textContent = 'No questions are saved for these topics yet. Use syllabus AI generation if the backend is configured, or ask an instructor to add curated questions.';
+  }
+  updateQuizSetupSummary();
+}
+
+document.getElementById('quizSubjectSelect').addEventListener('change', event => {
+  activeQuizSyllabus = null;
+  pendingQuizSyllabusFile = null;
+  const fileInput = document.getElementById('quizSyllabusFile');
+  fileInput.value = '';
+  document.getElementById('quizSyllabusFileMeta').textContent = 'No file selected';
+  document.getElementById('quizRemoveSyllabusBtn').hidden = true;
+  document.getElementById('quizSyllabusPreviewPanel').hidden = true;
+  document.getElementById('quizSyllabusStatus').textContent = event.target.value ? 'Choose a PDF, DOCX, or TXT syllabus to extract topics.' : 'Choose a saved subject before uploading.';
+  document.getElementById('quizUploadSyllabusBtn').disabled = !event.target.value;
+  document.getElementById('quizSyllabusFile').disabled = !event.target.value;
+  document.getElementById('quizSyllabusDropzone').setAttribute('aria-disabled', String(!event.target.value));
+  const subject = subjects.find(item => item.id === event.target.value);
+  const topics = subject?.topics || [];
+  renderQuizTopicCheckboxes(topics);
+  document.getElementById('quizTopicSearch').disabled = !topics.length;
+  document.getElementById('quizTopicSearch').value = '';
+  document.getElementById('quizSelectAllTopics').disabled = !topics.length;
+  document.getElementById('quizClearTopics').disabled = !topics.length;
+  resetQuizSelection(subject ? 'Select topics to check the saved question bank.' : 'Choose a subject and topics to begin.');
+  document.getElementById('quizAvailableCount').textContent = topics.length ? 'Select topic(s) to check availability' : 'No syllabus topics available';
+  updateQuizSetupSummary();
+});
+
+function setPendingSyllabusFile(file) {
+  pendingQuizSyllabusFile = file || null;
+  if (file) {
+    activeQuizSyllabus = null;
+    const subject = subjects.find(item => item.id === document.getElementById('quizSubjectSelect').value);
+    renderQuizTopicCheckboxes(subject?.topics || []);
+    document.getElementById('quizSyllabusPreviewPanel').hidden = true;
+    document.getElementById('quizSyllabusStatus').classList.remove('quiz-status--error');
+    document.getElementById('quizTopicSearch').disabled = !(subject?.topics?.length);
+    document.getElementById('quizSelectAllTopics').disabled = !(subject?.topics?.length);
+    document.getElementById('quizClearTopics').disabled = !(subject?.topics?.length);
+    document.getElementById('topicQuizList').replaceChildren();
+    document.getElementById('topicQuizDetail').replaceChildren();
+    document.getElementById('quizAttemptHistory').replaceChildren();
+    quizAvailability = null;
+    resetQuizSelection('Upload and extract the syllabus to select its topics.');
+    document.getElementById('quizAvailableCount').textContent = 'Extract the uploaded syllabus to identify topics';
+  }
+  document.getElementById('quizSyllabusFileMeta').textContent = file
+    ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB`
+    : 'No file selected';
+  document.getElementById('quizUploadSyllabusBtn').disabled = !file || !document.getElementById('quizSubjectSelect').value;
+  document.getElementById('quizRemoveSyllabusBtn').hidden = !file && !activeQuizSyllabus;
+  if (file) document.getElementById('quizSyllabusStatus').textContent = 'File selected. It will be checked and extracted by the backend.';
+}
+
+const quizSyllabusFileInput = document.getElementById('quizSyllabusFile');
+const syllabusDropzone = document.getElementById('quizSyllabusDropzone');
+quizSyllabusFileInput.addEventListener('change', event => setPendingSyllabusFile(event.target.files[0]));
+syllabusDropzone.addEventListener('click', () => {
+  if (!quizSyllabusFileInput.disabled) quizSyllabusFileInput.click();
+});
+syllabusDropzone.addEventListener('keydown', event => {
+  if ((event.key === 'Enter' || event.key === ' ') && !quizSyllabusFileInput.disabled) {
+    event.preventDefault();
+    quizSyllabusFileInput.click();
+  }
+});
+['dragenter', 'dragover'].forEach(type => syllabusDropzone.addEventListener(type, event => {
+  event.preventDefault();
+  if (!quizSyllabusFileInput.disabled) syllabusDropzone.classList.add('is-dragging');
+}));
+['dragleave', 'drop'].forEach(type => syllabusDropzone.addEventListener(type, event => {
+  event.preventDefault();
+  syllabusDropzone.classList.remove('is-dragging');
+}));
+syllabusDropzone.addEventListener('drop', event => {
+  if (quizSyllabusFileInput.disabled) return;
+  const file = event.dataTransfer?.files?.[0];
+  if (file) {
+    try { quizSyllabusFileInput.files = event.dataTransfer.files; } catch { /* file picker remains available */ }
+    setPendingSyllabusFile(file);
+  }
+});
+
+document.getElementById('quizUploadSyllabusBtn').addEventListener('click', async () => {
+  const subjectId = document.getElementById('quizSubjectSelect').value;
+  if (!subjectId || !pendingQuizSyllabusFile) return;
+  const button = document.getElementById('quizUploadSyllabusBtn');
+  button.disabled = true;
+  quizSyllabusFileInput.disabled = true;
+  document.getElementById('quizRemoveSyllabusBtn').disabled = true;
+  syllabusDropzone.setAttribute('aria-disabled', 'true');
+  button.textContent = 'Extracting…';
+  document.getElementById('quizSyllabusStatus').textContent = 'Uploading temporarily and extracting text on the server…';
+  const body = new FormData();
+  body.append('subject_id', subjectId);
+  body.append('file', pendingQuizSyllabusFile);
+  try {
+    const result = await Auth.apiFetch('/academics/quizzes/syllabus/', { method: 'POST', body, throwOnError: true });
+    if (subjectId !== document.getElementById('quizSubjectSelect').value) return;
+    activeQuizSyllabus = { token: result.upload_token, subjectId, topics: result.topics, filename: result.filename };
+    renderQuizTopicCheckboxes(result.topics);
+    document.getElementById('quizTopicSearch').disabled = !result.topics.length;
+    document.getElementById('quizSelectAllTopics').disabled = !result.topics.length;
+    document.getElementById('quizClearTopics').disabled = !result.topics.length;
+    document.getElementById('quizSyllabusFileMeta').textContent = `${result.filename} · ${result.file_type} · ${result.total_found} topic(s) detected`;
+    document.getElementById('quizSyllabusStatus').textContent = `Text extraction complete. ${result.summary} Select the topics to include.`;
+    document.getElementById('quizSyllabusSummary').textContent = `${result.summary} Extracted text preview`;
+    document.getElementById('quizSyllabusPreview').textContent = result.preview;
+    document.getElementById('quizSyllabusPreviewPanel').hidden = false;
+    document.getElementById('quizRemoveSyllabusBtn').hidden = false;
+    document.getElementById('quizSyllabusStatus').classList.remove('quiz-status--error');
+    document.getElementById('quizSyllabusPreviewPanel').hidden = true;
+    document.getElementById('quizUploadSyllabusBtn').disabled = false;
+    document.getElementById('quizAvailableCount').textContent = 'Choose topic(s) to generate from the uploaded syllabus';
+    quizAvailability = null;
+    resetQuizSelection('Select extracted topics and question settings before generating.');
+    document.getElementById('quizAvailableCount').textContent = 'Uploaded topics use syllabus generation, not the saved question bank';
+    document.getElementById('topicQuizList').replaceChildren();
+    document.getElementById('topicQuizDetail').replaceChildren();
+    document.getElementById('quizAttemptHistory').replaceChildren();
+    document.getElementById('quizListStatus').textContent = 'Choose one or more extracted syllabus topics, set the question count and difficulty, then generate.';
+    quizAvailability = 0;
+  } catch (error) {
+    activeQuizSyllabus = null;
+    const subject = subjects.find(item => item.id === document.getElementById('quizSubjectSelect').value);
+    renderQuizTopicCheckboxes(subject?.topics || []);
+    document.getElementById('quizTopicSearch').disabled = !(subject?.topics?.length);
+    document.getElementById('quizSelectAllTopics').disabled = !(subject?.topics?.length);
+    document.getElementById('quizClearTopics').disabled = !(subject?.topics?.length);
+    document.getElementById('quizSyllabusPreviewPanel').hidden = true;
+    document.getElementById('quizSyllabusStatus').textContent = error?.message || 'The syllabus could not be extracted. Choose another file or retry.';
+    document.getElementById('quizSyllabusStatus').classList.add('quiz-status--error');
+    document.getElementById('quizRemoveSyllabusBtn').hidden = false;
+    document.getElementById('quizAvailableCount').textContent = 'Choose topic(s) to check the saved question bank';
+    quizAvailability = null;
+    resetQuizSelection('Upload failed. Select saved topics or retry with another file.');
+    await refreshQuizAvailability();
+  } finally {
+    quizSyllabusFileInput.disabled = !document.getElementById('quizSubjectSelect').value;
+    document.getElementById('quizRemoveSyllabusBtn').disabled = false;
+    syllabusDropzone.setAttribute('aria-disabled', String(quizSyllabusFileInput.disabled));
+    button.disabled = !pendingQuizSyllabusFile || !document.getElementById('quizSubjectSelect').value;
+    button.textContent = 'Upload and extract';
+    updateQuizSetupSummary();
+  }
+});
+
+document.getElementById('quizRemoveSyllabusBtn').addEventListener('click', () => {
+  activeQuizSyllabus = null;
+  pendingQuizSyllabusFile = null;
+  quizSyllabusFileInput.value = '';
+  document.getElementById('quizSyllabusFileMeta').textContent = 'No file selected';
+  document.getElementById('quizSyllabusStatus').textContent = 'Temporary syllabus selection removed. You can choose another file.';
+  document.getElementById('quizSyllabusStatus').classList.remove('quiz-status--error');
+  document.getElementById('quizSyllabusPreviewPanel').hidden = true;
+  document.getElementById('quizRemoveSyllabusBtn').hidden = true;
+  const subject = subjects.find(item => item.id === document.getElementById('quizSubjectSelect').value);
+  renderQuizTopicCheckboxes(subject?.topics || []);
+  document.getElementById('quizTopicSearch').disabled = !(subject?.topics?.length);
+  document.getElementById('quizSelectAllTopics').disabled = !(subject?.topics?.length);
+  document.getElementById('quizClearTopics').disabled = !(subject?.topics?.length);
+  document.getElementById('quizUploadSyllabusBtn').disabled = true;
+  resetQuizSelection('Syllabus selection cleared. Choose saved topics or upload another syllabus.');
+  refreshQuizAvailability();
+});
+
+document.getElementById('quizSelectAllTopics').addEventListener('click', () => {
+  document.querySelectorAll('#quizTopicCheckboxes input[type="checkbox"]').forEach(input => {
+    input.checked = true;
+    input.closest('.quiz-topic-option').classList.add('is-selected');
+  });
+  updateQuizSetupSummary();
+  refreshQuizAvailability();
+});
+
+document.getElementById('quizClearTopics').addEventListener('click', () => {
+  document.querySelectorAll('#quizTopicCheckboxes input[type="checkbox"]').forEach(input => {
+    input.checked = false;
+    input.closest('.quiz-topic-option').classList.remove('is-selected');
+  });
+  updateQuizSetupSummary();
+  refreshQuizAvailability();
+});
+
+document.getElementById('quizTopicSearch').addEventListener('input', event => {
+  const filter = event.target.value.trim().toLocaleLowerCase();
+  document.querySelectorAll('#quizTopicCheckboxes .quiz-topic-option').forEach(label => {
+    label.hidden = !label.textContent.toLocaleLowerCase().includes(filter);
+  });
+});
+
+document.getElementById('quizQuestionCount').addEventListener('input', updateQuizSetupSummary);
+document.getElementById('quizDifficulty').addEventListener('change', () => {
+  updateQuizSetupSummary();
+  refreshQuizAvailability();
+});
+
+document.getElementById('createBankQuizBtn').addEventListener('click', async () => {
+  const subjectId = document.getElementById('quizSubjectSelect').value;
+  const topicIds = selectedQuizTopicIds();
+  const questionCount = Number(document.getElementById('quizQuestionCount').value);
+  const difficulty = document.getElementById('quizDifficulty').value;
+  if (!subjectId || !topicIds.length || !Number.isInteger(questionCount) || questionCount < 1 || questionCount > 20 || questionCount > quizAvailability) return;
+  const button = document.getElementById('createBankQuizBtn');
+  bankQuizCreating = true;
+  button.disabled = true;
+  document.getElementById('quizListStatus').textContent = 'Building a quiz from your saved questions…';
+  try {
+    const quiz = await Auth.apiFetch('/academics/quizzes/create/', {
+      method: 'POST', throwOnError: true,
+      body: JSON.stringify({ subject_id: subjectId, topic_ids: topicIds, question_count: questionCount, difficulty })
+    });
+    document.getElementById('quizListStatus').textContent = `Ready: ${quiz.questions.length} saved question(s), linked to your selected topics.`;
+    await renderTopicQuiz(quiz);
+  } catch (error) {
+    document.getElementById('quizListStatus').textContent = error?.message || 'Could not create a quiz from the saved question bank.';
+    await refreshQuizAvailability();
+  } finally {
+    bankQuizCreating = false;
+    updateQuizSetupSummary();
+  }
+});
+
+document.getElementById('loadTopicQuizzesBtn').addEventListener('click', async () => {
+  const subjectId = document.getElementById('quizSubjectSelect').value;
+  const topicIds = selectedQuizTopicIds();
+  if (!subjectId || !topicIds.length) return;
+  savedQuizLoading = true;
+  updateQuizSetupSummary();
+  const loadButton = document.getElementById('loadTopicQuizzesBtn');
+  const oldText = loadButton.textContent;
+  loadButton.textContent = 'Loading saved quizzes…';
+  const statusEl = document.getElementById('quizListStatus');
+  statusEl.textContent = 'Loading saved quizzes…';
+  document.getElementById('topicQuizList').replaceChildren();
+  document.getElementById('topicQuizDetail').replaceChildren();
+  document.getElementById('quizAttemptHistory').replaceChildren();
+  try {
+    const results = await Promise.all(topicIds.map(topicId => {
+      const query = new URLSearchParams({ subject_id: subjectId, topic_id: topicId });
+      if (activeQuizSyllabus?.token) query.set('upload_token', activeQuizSyllabus.token);
+      return Auth.apiFetch(`/academics/quizzes/?${query}`);
+    }));
+    const quizzes = [...new Map(results.flat().filter(Boolean).map(quiz => [quiz.id, quiz])).values()];
+    if (results.some(result => !result)) throw new Error('Could not load saved quizzes. Please try again.');
+    if (!quizzes.length) {
+      statusEl.textContent = 'No saved quizzes exist for these topics yet. Use the question bank or generate questions from the syllabus.';
+      return;
+    }
+    statusEl.textContent = `${quizzes.length} saved quiz${quizzes.length === 1 ? '' : 'zes'} found.`;
+    quizzes.forEach(quiz => {
+      const card = document.createElement('article');
+      card.className = 'topic-quiz-card';
+      const title = document.createElement('h3');
+      title.textContent = quiz.title;
+      const details = document.createElement('p');
+      const sourceLabel = quiz.source === 'openai_generated' ? 'AI generated from syllabus' : (quiz.source === 'question_bank' ? 'Question bank' : 'Curated');
+      details.textContent = `${quiz.subject_name} · ${quiz.topic_name} · ${quiz.question_count} question(s) · ${sourceLabel}`;
+      const button = document.createElement('button');
+      button.className = 'btn btn-primary btn-sm';
+      button.type = 'button';
+      button.textContent = 'Start quiz';
+      button.addEventListener('click', () => loadTopicQuiz(quiz.id));
+      card.append(title, details, button);
+      document.getElementById('topicQuizList').appendChild(card);
+    });
+  } catch (error) {
+    statusEl.textContent = error?.message || 'Could not load saved quizzes.';
+  } finally {
+    savedQuizLoading = false;
+    loadButton.textContent = oldText;
+    updateQuizSetupSummary();
+  }
+});
+
+document.getElementById('generateTopicQuizBtn').addEventListener('click', async () => {
+  if (!AI_QUIZ_GENERATION_ENABLED) return;
+  const subjectId = document.getElementById('quizSubjectSelect').value;
+  const topicIds = selectedQuizTopicIds();
+  const count = Number(document.getElementById('quizQuestionCount').value);
+  if (!subjectId || !activeQuizSyllabus?.token || !topicIds.length || !Number.isInteger(count) || count < 1 || count > 20) return;
+  const button = document.getElementById('generateTopicQuizBtn');
+  syllabusQuizGenerating = true;
+  button.disabled = true;
+  document.getElementById('quizListStatus').textContent = 'Generating questions from your uploaded syllabus…';
+  try {
+    const quiz = await Auth.apiFetch('/academics/quizzes/generate/', {
+      method: 'POST', throwOnError: true,
+      body: JSON.stringify({
+        subject_id: subjectId, topic_ids: topicIds, question_count: count,
+        difficulty: document.getElementById('quizDifficulty').value,
+        syllabus_token: activeQuizSyllabus.token,
+      })
+    });
+    document.getElementById('quizListStatus').textContent = `Generated and saved ${quiz.questions.length} syllabus question(s).`;
+    await renderTopicQuiz(quiz);
+  } catch (error) {
+    document.getElementById('quizListStatus').textContent = error?.message || 'Syllabus question generation is unavailable.';
+  } finally {
+    syllabusQuizGenerating = false;
+    updateQuizSetupSummary();
+  }
+});
+
+async function loadTopicQuiz(quizId) {
+  const detail = document.getElementById('topicQuizDetail');
+  detail.replaceChildren();
+  document.getElementById('quizAttemptHistory').replaceChildren();
+  const loading = document.createElement('p');
+  loading.className = 'quiz-status';
+  loading.textContent = 'Loading quiz questions…';
+  detail.appendChild(loading);
+  const quiz = await Auth.apiFetch(`/academics/quizzes/${encodeURIComponent(quizId)}/`);
+  detail.replaceChildren();
+  if (!quiz) {
+    const error = document.createElement('p');
+    error.className = 'quiz-status quiz-status--error';
+    error.textContent = 'Could not load this quiz. It may have been removed; please reload the quiz list.';
+    detail.appendChild(error);
+    return;
+  }
+  await renderTopicQuiz(quiz);
+}
+
+async function renderTopicQuiz(quiz) {
+  const detail = document.getElementById('topicQuizDetail');
+  detail.replaceChildren();
+  currentTopicQuiz = quiz;
+  quizQuestionIndex = 0;
+  quizAnswers = {};
+  quizSubmitting = false;
+  const header = document.createElement('div');
+  header.className = 'quiz-detail-header';
+  const title = document.createElement('h2');
+  title.textContent = quiz.title;
+  const context = document.createElement('p');
+  const sourceLabel = quiz.source === 'openai_generated' ? 'AI generated from syllabus' : (quiz.source === 'question_bank' ? 'Saved question bank' : 'Curated');
+  context.textContent = `${quiz.subject_name} · ${quiz.topic_name} · ${quiz.questions.length} question(s) · ${quiz.difficulty || 'medium'} · ${sourceLabel}`;
+  header.append(title, context);
+  detail.appendChild(header);
+
+  const form = document.createElement('form');
+  form.className = 'quiz-question-form';
+  const progress = document.createElement('p');
+  progress.className = 'quiz-progress';
+  progress.setAttribute('aria-live', 'polite');
+  quiz.questions.forEach((question, index) => {
+    const fieldset = document.createElement('fieldset');
+    fieldset.className = 'quiz-question';
+    fieldset.hidden = index !== 0;
+    const legend = document.createElement('legend');
+    legend.textContent = `${index + 1}. ${question.text}`;
+    fieldset.appendChild(legend);
+    question.options.forEach((optionText, optionIndex) => {
+      const label = document.createElement('label');
+      label.className = 'quiz-option';
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = `question-${question.question_id}`;
+      input.value = String(optionIndex);
+      input.dataset.questionId = question.question_id;
+      input.addEventListener('change', () => {
+        quizAnswers[question.question_id] = optionIndex;
+        next.disabled = false;
+        if (quizQuestionIndex === quiz.questions.length - 1) submit.disabled = false;
+      });
+      const text = document.createElement('span');
+      text.textContent = optionText;
+      label.append(input, text);
+      fieldset.appendChild(label);
+    });
+    form.appendChild(fieldset);
+  });
+  const navigation = document.createElement('div');
+  navigation.className = 'quiz-navigation';
+  const previous = document.createElement('button');
+  previous.type = 'button';
+  previous.className = 'btn btn-ghost';
+  previous.textContent = 'Previous';
+  previous.disabled = true;
+  const next = document.createElement('button');
+  next.type = 'button';
+  next.className = 'btn btn-primary';
+  next.textContent = quiz.questions.length > 1 ? 'Next question' : 'Review answers';
+  next.disabled = true;
+  const submit = document.createElement('button');
+  submit.type = 'submit';
+  submit.className = 'btn btn-primary';
+  submit.textContent = 'Submit answers';
+  submit.hidden = true;
+  navigation.append(previous, next, submit);
+  form.prepend(progress);
+  form.appendChild(navigation);
+  const updateQuestion = () => {
+    form.querySelectorAll('.quiz-question').forEach((fieldset, index) => { fieldset.hidden = index !== quizQuestionIndex; });
+    progress.textContent = `Question ${quizQuestionIndex + 1} of ${quiz.questions.length}`;
+    previous.disabled = quizQuestionIndex === 0;
+    const isLast = quizQuestionIndex === quiz.questions.length - 1;
+    next.hidden = isLast;
+    submit.hidden = !isLast;
+    next.disabled = quizAnswers[quiz.questions[quizQuestionIndex].question_id] === undefined;
+    submit.disabled = quizAnswers[quiz.questions[quizQuestionIndex].question_id] === undefined;
+  };
+  previous.addEventListener('click', () => {
+    if (quizQuestionIndex > 0) { quizQuestionIndex -= 1; updateQuestion(); }
+  });
+  next.addEventListener('click', () => {
+    if (quizAnswers[quiz.questions[quizQuestionIndex].question_id] === undefined) return;
+    if (quizQuestionIndex < quiz.questions.length - 1) quizQuestionIndex += 1;
+    updateQuestion();
+  });
+  updateQuestion();
+  form.addEventListener('submit', submitTopicQuiz);
+  detail.appendChild(form);
+
+  const historyButton = document.createElement('button');
+  historyButton.type = 'button';
+  historyButton.className = 'btn btn-ghost btn-sm quiz-history-button';
+  historyButton.textContent = 'View attempt history';
+  historyButton.addEventListener('click', () => loadQuizAttemptHistory(quiz.id));
+  detail.appendChild(historyButton);
+}
+
+async function submitTopicQuiz(event) {
+  event.preventDefault();
+  if (!currentTopicQuiz || quizSubmitting) return;
+  const form = event.currentTarget;
+  const submit = form.querySelector('button[type="submit"]');
+  const answers = currentTopicQuiz.questions.map(question => ({
+    question_id: question.question_id, selected_index: quizAnswers[question.question_id],
+  }));
+  if (answers.some(answer => !Number.isInteger(answer.selected_index))) return;
+  if (!window.confirm('Submit your answers and see your result?')) return;
+  quizSubmitting = true;
+  submit.disabled = true;
+  submit.textContent = 'Submitting…';
+  const result = await Auth.apiFetch(`/academics/quizzes/${encodeURIComponent(currentTopicQuiz.id)}/attempts/`, {
+    method: 'POST',
+    body: JSON.stringify({ answers })
+  });
+  submit.disabled = false;
+  submit.textContent = 'Submit answers';
+  if (!result) {
+    quizSubmitting = false;
+    submit.disabled = false;
+    showToast('Quiz submission failed. Please try again.', 'error');
+    return;
+  }
+  renderQuizAttemptResult(result, document.getElementById('topicQuizDetail'));
+  showToast('Quiz submitted and result saved.');
+  await loadQuizAttemptHistory(currentTopicQuiz.id);
+}
+
+function renderQuizAttemptResult(attempt, parent) {
+  const panel = document.createElement('section');
+  panel.className = 'quiz-result-panel';
+  const heading = document.createElement('h3');
+  heading.textContent = `Result: ${attempt.score}% (${attempt.correct_count}/${attempt.total_questions} correct)`;
+  const counts = document.createElement('p');
+  counts.textContent = `${attempt.incorrect_count} incorrect · ${formatDateTime(attempt.created_at)}`;
+  panel.append(heading, counts);
+  attempt.answers.forEach((answer, index) => {
+    const item = document.createElement('article');
+    item.className = `quiz-answer-review ${answer.is_correct ? 'quiz-answer-review--correct' : 'quiz-answer-review--incorrect'}`;
+    const question = document.createElement('h4');
+    question.textContent = `${index + 1}. ${answer.question}`;
+    const status = document.createElement('p');
+    status.textContent = answer.is_correct ? 'Correct' : `Incorrect · Your answer: ${answer.selected_answer}`;
+    const correct = document.createElement('p');
+    correct.textContent = `Correct answer: ${answer.correct_answer}`;
+    item.append(question, status, correct);
+    if (answer.explanation) {
+      const explanation = document.createElement('p');
+      explanation.textContent = answer.explanation;
+      item.appendChild(explanation);
+    }
+    panel.appendChild(item);
+  });
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'btn btn-ghost';
+  retry.textContent = 'Retry quiz';
+  retry.addEventListener('click', () => loadTopicQuiz(attempt.quiz_id));
+  panel.appendChild(retry);
+  parent.appendChild(panel);
+}
+
+function formatDateTime(value) {
+  if (!value) return 'Date unavailable';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 'Date unavailable' : parsed.toLocaleString();
+}
+
+async function loadQuizAttemptHistory(quizId) {
+  const history = document.getElementById('quizAttemptHistory');
+  history.replaceChildren();
+  const status = document.createElement('p');
+  status.className = 'quiz-status';
+  status.textContent = 'Loading attempt history…';
+  history.appendChild(status);
+  const attempts = await Auth.apiFetch(`/academics/quizzes/${encodeURIComponent(quizId)}/attempts/`);
+  history.replaceChildren();
+  const heading = document.createElement('h3');
+  heading.textContent = 'Your attempts';
+  history.appendChild(heading);
+  if (!attempts) {
+    const error = document.createElement('p');
+    error.className = 'quiz-status quiz-status--error';
+    error.textContent = 'Could not load your attempt history.';
+    history.appendChild(error);
+  } else if (!attempts.length) {
+    const empty = document.createElement('p');
+    empty.className = 'quiz-status';
+    empty.textContent = 'No attempts yet. Complete this quiz to see your result here.';
+    history.appendChild(empty);
+  } else {
+    attempts.forEach(attempt => {
+      const row = document.createElement('article');
+      row.className = 'quiz-history-row';
+      const summary = document.createElement('p');
+      summary.textContent = `${attempt.score}% · ${attempt.correct_count}/${attempt.total_questions} correct · ${formatDateTime(attempt.created_at)}`;
+      const resultButton = document.createElement('button');
+      resultButton.type = 'button';
+      resultButton.className = 'btn btn-ghost btn-sm';
+      resultButton.textContent = 'Review result';
+      resultButton.addEventListener('click', () => renderQuizAttemptResult(attempt, history));
+      row.append(summary, resultButton);
+      history.appendChild(row);
+    });
+  }
+}
+
 /* ===== FETCH ALL DATA ===== */
 async function loadAll() {
   [subjects, assignments, exams, studyPlans] = await Promise.all([
@@ -150,6 +808,7 @@ async function loadAll() {
   studyPlans = studyPlans || [];
 
   populateSubjectSelects();
+  fillQuizSubjectSelect();
   renderStats();
   renderOverviewLists();
   renderInsights();

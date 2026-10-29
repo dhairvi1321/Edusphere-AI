@@ -4,6 +4,8 @@ Supports PDF (text-based), DOCX, and TXT files.
 """
 import re
 import io
+import os
+import zipfile
 
 ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.pptx'}
 ALLOWED_MIME_TYPES = {
@@ -15,6 +17,51 @@ ALLOWED_MIME_TYPES = {
     'text/plain',
 }
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+QUIZ_ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt'}
+
+
+def validate_quiz_upload(file, max_file_size=MAX_FILE_SIZE):
+    """Validate quiz uploads by size, extension, signature/package, and safe decoding."""
+    ext = os.path.splitext(os.path.basename(str(getattr(file, 'name', ''))))[1].lower()
+    if ext not in QUIZ_ALLOWED_EXTENSIONS:
+        return False, 'Unsupported file type. Choose a PDF, DOCX, or TXT syllabus.'
+    size = getattr(file, 'size', None)
+    if not isinstance(size, int) or size <= 0:
+        return False, 'The selected file is empty.'
+    if size > max_file_size:
+        return False, f'The file exceeds the {max_file_size // (1024 * 1024)} MB upload limit.'
+    try:
+        file.seek(0)
+        if ext == '.pdf':
+            if not file.read(8).lstrip().startswith(b'%PDF-'):
+                return False, 'The file contents do not look like a valid PDF.'
+        elif ext == '.docx':
+            with zipfile.ZipFile(file) as archive:
+                names = set(archive.namelist())
+                if '[Content_Types].xml' not in names or 'word/document.xml' not in names:
+                    return False, 'The DOCX file is missing its document content.'
+                if any('vbaproject' in name.casefold() for name in names):
+                    return False, 'Macro-enabled documents are not accepted.'
+                if sum(item.file_size for item in archive.infolist()) > max_file_size * 20:
+                    return False, 'The DOCX expands beyond the safe processing limit.'
+                if archive.testzip() is not None:
+                    return False, 'The DOCX archive is corrupt.'
+        else:
+            raw = file.read()
+            try:
+                raw.decode('utf-8-sig')
+            except UnicodeDecodeError:
+                return False, 'TXT files must use UTF-8 text encoding.'
+            if not raw.decode('utf-8-sig').strip():
+                return False, 'The selected file contains no text.'
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
+        return False, 'The selected file is corrupt or cannot be read.'
+    finally:
+        try:
+            file.seek(0)
+        except (AttributeError, OSError):
+            pass
+    return True, None
 
 
 def validate_upload(file):
@@ -38,13 +85,19 @@ def extract_text(filepath, ext):
     """
     ext = ext.lower()
     if ext == '.txt':
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        with open(filepath, 'r', encoding='utf-8-sig', errors='strict') as f:
             return f.read(), None
 
     if ext == '.docx':
         from docx import Document
         doc = Document(filepath)
-        text = '\n'.join(p.text for p in doc.paragraphs if p.text.strip())
+        lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [re.sub(r'\s+', ' ', cell.text).strip() for cell in row.cells]
+                if any(cells):
+                    lines.append(' | '.join(cells))
+        text = '\n'.join(lines)
         return text, None
 
     if ext == '.pptx':
@@ -173,3 +226,46 @@ def parse_topics(text, subject_name=''):
                 order += 1
 
     return topics
+
+
+def _topic_heading_text(line):
+    cleaned = _clean(line)
+    numbered = _NUMBERED_RE.match(cleaned)
+    if numbered:
+        return _clean(numbered.group(2))
+    bullet = _BULLET_RE.match(cleaned)
+    if bullet:
+        return _clean(bullet.group(1))
+    return cleaned
+
+
+def extract_topic_sections(text, selected_topics, max_chars=24000):
+    """Return bounded syllabus sections for the selected parsed headings only."""
+    lines = text.splitlines()
+    detected = parse_topics(text)
+    title_to_positions = {}
+    for index, line in enumerate(lines):
+        heading = _topic_heading_text(line).casefold()
+        if any(topic['title'].casefold() == heading for topic in detected):
+            title_to_positions.setdefault(heading, []).append(index)
+    heading_positions = sorted(index for positions in title_to_positions.values() for index in positions)
+    sections = []
+    remaining = max_chars
+    for topic in selected_topics:
+        title = topic['title'] if isinstance(topic, dict) else topic.title
+        positions = title_to_positions.get(title.casefold(), [])
+        if positions:
+            start = positions[0]
+            end = next((position for position in heading_positions if position > start), len(lines))
+            section = '\n'.join(lines[start:end]).strip()
+        else:
+            needle = title.casefold()
+            found = next((index for index, line in enumerate(lines) if needle in line.casefold()), None)
+            section = '\n'.join(lines[max(0, found - 3):found + 8]).strip() if found is not None else ''
+        section = section[:min(8000, remaining)]
+        if section:
+            sections.append(f"Topic: {title}\n{section}")
+            remaining -= len(section)
+        if remaining <= 0:
+            break
+    return '\n\n'.join(sections)

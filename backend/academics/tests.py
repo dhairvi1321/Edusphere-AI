@@ -1,18 +1,26 @@
 from datetime import date, timedelta
+import json
 import os
+import tempfile
+from pathlib import Path
+from io import BytesIO, StringIO
 from uuid import uuid4
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
+from django.test.utils import override_settings
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from rest_framework.test import APIClient
 from accounts.models import User
 from accounts.views import make_tokens
 from mongoengine.connection import get_db
+from mongoengine.errors import DoesNotExist
 from pymongo.errors import ServerSelectionTimeoutError
 
-from .models import Assignment, StudyPlan, Subject, SyllabusTopic
+from .models import Assignment, QuizAttempt, QuizQuestion, StudyPlan, Subject, SyllabusTopic, TopicQuiz
 from .views import (
     AcademicAssistantAsk,
     GenerateStudyPlan,
@@ -20,6 +28,9 @@ from .views import (
     StudyPlanListCreate,
     StudyPlanDetail,
     TopicDetail,
+    TopicQuizList,
+    TopicQuizDetail,
+    TopicQuizAttempts,
     _build_session_pool,
     _priority_score,
     _schedule_sessions,
@@ -445,6 +456,463 @@ class AcademicAssistantTests(SimpleTestCase):
         self.assertEqual(response.status_code, 503)
 
 
+@override_settings(QUIZ_AI_GENERATION_ENABLED=True)
+class TopicQuizAPITests(SimpleTestCase):
+    def setUp(self):
+        self.user_id = 'student-quiz-test'
+        self.subject = SimpleNamespace(id='subject-1', name='Software Engineering', topics=[], syllabus_files=[{'filename': 'source.txt', 'name': 'source.txt'}])
+        self.topic = SimpleNamespace(id='topic-1', title='Software Testing')
+        self.subject.topics = [self.topic]
+        self.quiz = SimpleNamespace(
+            id='quiz-1', title='Testing Basics', source='author_created', subject_id='subject-1', topic_id='topic-1',
+            questions=[
+                QuizQuestion(question_id='q1', text='What is a test case?', options=['A check', 'A program'], correct_index=0, explanation='A test case defines input and expected output.'),
+                QuizQuestion(question_id='q2', text='Which is a test level?', options=['Unit', 'Compile'], correct_index=0, explanation='Unit testing is a test level.'),
+            ],
+        )
+        self.request = SimpleNamespace(
+            user=SimpleNamespace(id=self.user_id),
+            data={},
+            query_params={'subject_id': 'subject-1', 'topic_id': 'topic-1'},
+        )
+
+    def test_quiz_list_is_scoped_to_owned_subject_and_topic(self):
+        with patch('academics.views.Subject.objects', return_value=[self.subject]), \
+                patch('academics.views.TopicQuiz.objects') as quizzes:
+            quizzes.return_value.order_by.return_value = [self.quiz]
+            response = TopicQuizList().get(self.request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['topic_id'], 'topic-1')
+        self.assertEqual(response.data[0]['subject_name'], 'Software Engineering')
+        quizzes.assert_called_once_with(user_id=self.user_id, subject_id='subject-1')
+
+    def test_topic_list_does_not_return_question_keys(self):
+        with patch('academics.views._owned_topic_quiz', return_value=(self.quiz, self.subject, self.topic)):
+            response = TopicQuizDetail().get(self.request, 'quiz-1')
+
+        self.assertEqual(response.status_code, 200)
+        question = response.data['questions'][0]
+        self.assertEqual(question['options'], ['A check', 'A program'])
+        self.assertNotIn('correct_index', question)
+        self.assertNotIn('explanation', question)
+
+    def test_empty_question_quiz_returns_clear_empty_state(self):
+        self.quiz.questions = []
+        with patch('academics.views._owned_topic_quiz', return_value=(self.quiz, self.subject, self.topic)):
+            response = TopicQuizDetail().get(self.request, 'quiz-1')
+        self.assertEqual(response.status_code, 404)
+        self.assertIn('does not have any questions', response.data['detail'])
+
+    def test_invalid_quiz_id_is_not_found(self):
+        with patch('academics.views._owned_topic_quiz', return_value=(None, None, None)):
+            response = TopicQuizDetail().get(self.request, 'invalid-id')
+        self.assertEqual(response.status_code, 404)
+
+    def test_backend_scores_and_returns_correct_and_incorrect_review(self):
+        self.request.data = {'answers': [
+            {'question_id': 'q1', 'selected_index': 0},
+            {'question_id': 'q2', 'selected_index': 1},
+        ]}
+        with patch('academics.views._owned_topic_quiz', return_value=(self.quiz, self.subject, self.topic)), \
+                patch.object(QuizAttempt, 'save', autospec=True, side_effect=lambda attempt: attempt):
+            response = TopicQuizAttempts().post(self.request, 'quiz-1')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['score'], 50)
+        self.assertEqual(response.data['correct_count'], 1)
+        self.assertEqual(response.data['incorrect_count'], 1)
+        self.assertTrue(response.data['answers'][0]['is_correct'])
+        self.assertFalse(response.data['answers'][1]['is_correct'])
+        self.assertEqual(response.data['answers'][1]['correct_answer'], 'Unit')
+        self.assertIn('test level', response.data['answers'][1]['explanation'])
+
+    def test_missing_duplicate_foreign_or_invalid_answers_are_rejected(self):
+        invalid_submissions = [
+            {'answers': [{'question_id': 'q1', 'selected_index': 0}]},
+            {'answers': [{'question_id': 'q1', 'selected_index': 0}, {'question_id': 'q1', 'selected_index': 1}]},
+            {'answers': [{'question_id': 'q1', 'selected_index': 0}, {'question_id': 'foreign-q', 'selected_index': 0}]},
+            {'answers': [{'question_id': 'q1', 'selected_index': 9}, {'question_id': 'q2', 'selected_index': 0}]},
+            {'answers': [{'question_id': 'q1', 'selected_index': 0}, {'question_id': 'q2', 'selected_index': 0}], 'score': 100},
+        ]
+        with patch('academics.views._owned_topic_quiz', return_value=(self.quiz, self.subject, self.topic)), \
+                patch.object(QuizAttempt, 'save', autospec=True) as save:
+            for submission in invalid_submissions:
+                self.request.data = submission
+                response = TopicQuizAttempts().post(self.request, 'quiz-1')
+                self.assertEqual(response.status_code, 400)
+            save.assert_not_called()
+
+    def test_database_failure_returns_503(self):
+        with patch('academics.views._owned_topic_quiz', side_effect=ServerSelectionTimeoutError('quiz DB unavailable')):
+            response = TopicQuizDetail().get(self.request, 'quiz-1')
+        self.assertEqual(response.status_code, 503)
+
+    def test_generate_requires_server_api_key(self):
+        from academics.views import TopicQuizGenerate
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 2, 'syllabus_token': 'test-token',
+        })
+        cached = {'subject_id': 'subject-1', 'topics': [{'id': 'topic-1', 'title': 'Software Testing'}], 'text': 'Software Testing\n' + ('Test cases describe expected outcomes. ' * 5)}
+        with patch.dict('os.environ', {}, clear=True), patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.cache.get', return_value=cached), patch('academics.views.TopicQuiz.objects') as quizzes:
+            subjects.get.return_value = self.subject
+            quizzes.return_value.first.return_value = None
+            response = TopicQuizGenerate().post(request)
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('OPENAI_API_KEY', response.data['detail'])
+
+    @override_settings(QUIZ_AI_GENERATION_ENABLED=False)
+    def test_disabled_generation_returns_coming_soon_without_openai_request(self):
+        from academics.views import TopicQuizGenerate
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={})
+        with patch('academics.views.requests.post') as openai:
+            response = TopicQuizGenerate().post(request)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data['error']['code'], 'feature_coming_soon')
+        self.assertIn('under development', response.data['detail'])
+        openai.assert_not_called()
+
+    def test_generate_validates_topic_ownership_before_openai_call(self):
+        from academics.views import TopicQuizGenerate
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['foreign-topic'], 'question_count': 2,
+        })
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), \
+                patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.requests.post') as openai:
+            subjects.get.return_value = self.subject
+            response = TopicQuizGenerate().post(request)
+        self.assertEqual(response.status_code, 400)
+        openai.assert_not_called()
+
+    def test_generate_rejects_invalid_question_count(self):
+        from academics.views import TopicQuizGenerate
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 21,
+        })
+        with patch('academics.views.Subject.objects') as subjects:
+            subjects.get.return_value = self.subject
+            response = TopicQuizGenerate().post(request)
+        self.assertEqual(response.status_code, 400)
+
+    def test_question_bank_create_enforces_requested_count_and_topic_scope(self):
+        from academics.views import TopicQuizCreateFromBank
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 1,
+        })
+        bank_query = MagicMock()
+        bank_query.order_by.return_value = [self.quiz]
+        bank_query.first.return_value = None
+        with patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.TopicQuiz.objects', return_value=bank_query), \
+                patch.object(TopicQuiz, 'save', autospec=True, side_effect=lambda quiz: setattr(quiz, 'id', 'bank-quiz') or quiz):
+            subjects.get.return_value = self.subject
+            response = TopicQuizCreateFromBank().post(request)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(len(response.data['questions']), 1)
+        self.assertEqual(response.data['source'], 'question_bank')
+        self.assertEqual(response.data['questions'][0]['topic_id'], 'topic-1')
+        self.assertNotIn('correct_index', response.data['questions'][0])
+
+    def test_question_bank_shortage_and_foreign_topic_are_rejected_without_saving(self):
+        from academics.views import TopicQuizCreateFromBank
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 3,
+        })
+        bank_query = MagicMock()
+        bank_query.order_by.return_value = [self.quiz]
+        with patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.TopicQuiz.objects', return_value=bank_query), \
+                patch.object(TopicQuiz, 'save', autospec=True) as save:
+            subjects.get.return_value = self.subject
+            response = TopicQuizCreateFromBank().post(request)
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.data['available_count'], 2)
+            request.data['topic_ids'] = ['someone-elses-topic']
+            invalid = TopicQuizCreateFromBank().post(request)
+        self.assertEqual(invalid.status_code, 400)
+        save.assert_not_called()
+
+    def test_question_bank_availability_counts_unique_selected_topic_questions(self):
+        from academics.views import TopicQuizAvailability
+        self.quiz.questions.append(QuizQuestion(
+            question_id='duplicate-q', text='  WHAT is a test case? ',
+            options=['A check', 'A program'], correct_index=0,
+        ))
+        request = SimpleNamespace(
+            user=SimpleNamespace(id=self.user_id),
+            query_params={'subject_id': 'subject-1', 'topic_ids': 'topic-1'},
+        )
+        bank_query = MagicMock()
+        bank_query.order_by.return_value = [self.quiz]
+        with patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.TopicQuiz.objects', return_value=bank_query):
+            subjects.get.return_value = self.subject
+            response = TopicQuizAvailability().get(request)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['available_count'], 2)
+
+    def test_question_bank_availability_and_creation_respect_difficulty(self):
+        from academics.views import TopicQuizAvailability, TopicQuizCreateFromBank
+        self.request.query_params['difficulty'] = 'hard'
+        bank_query = MagicMock()
+        bank_query.order_by.return_value = [self.quiz]
+        with patch('academics.views.Subject.objects') as subjects, patch('academics.views.TopicQuiz.objects', return_value=bank_query):
+            subjects.get.return_value = self.subject
+            available = TopicQuizAvailability().get(self.request)
+            created = TopicQuizCreateFromBank().post(SimpleNamespace(
+                user=SimpleNamespace(id=self.user_id),
+                data={'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 1, 'difficulty': 'hard'},
+            ))
+        self.assertEqual(available.status_code, 200)
+        self.assertEqual(available.data['available_count'], 0)
+        self.assertEqual(created.status_code, 409)
+        self.assertEqual(created.data['available_count'], 0)
+
+    def test_repeated_question_bank_creation_reuses_the_saved_selection(self):
+        from academics.views import TopicQuizCreateFromBank
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 1,
+        })
+        bank_query = MagicMock()
+        bank_query.order_by.return_value = [self.quiz]
+        bank_query.first.return_value = None
+        with patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.TopicQuiz.objects', return_value=bank_query), \
+                patch.object(TopicQuiz, 'save', autospec=True, side_effect=lambda quiz: setattr(quiz, 'id', 'bank-quiz') or quiz) as save:
+            subjects.get.return_value = self.subject
+            first = TopicQuizCreateFromBank().post(request)
+            saved_quiz = save.call_args.args[0]
+            bank_query.first.return_value = saved_quiz
+            second = TopicQuizCreateFromBank().post(request)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data['id'], second.data['id'])
+        save.assert_called_once()
+
+    def test_generate_saves_topic_scoped_questions_and_withholds_keys(self):
+        from academics.views import TopicQuizGenerate
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 1, 'syllabus_token': 'test-token',
+        })
+        generated = {'questions': [{
+            'topic_id': 'topic-1', 'question': 'What defines a test case?',
+            'options': ['Input and expected output', 'A compiler', 'A test runner', 'A deployment step'], 'correct_index': 0,
+            'explanation': 'The source describes test cases using expected results.',
+        }]}
+        fake_response = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps(generated)}]}]},
+        )
+        cached = {'subject_id': 'subject-1', 'topics': [{'id': 'topic-1', 'title': 'Software Testing'}], 'text': 'Software Testing\n' + ('Test cases define inputs and expected results for software. ' * 4)}
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), \
+                patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.cache.get', return_value=cached), \
+                patch('academics.views.TopicQuiz.objects') as quizzes, \
+                patch('academics.views.requests.post', return_value=fake_response) as openai, \
+                patch.object(TopicQuiz, 'save', autospec=True, side_effect=lambda quiz: setattr(quiz, 'id', 'generated-quiz') or quiz):
+            subjects.get.return_value = self.subject
+            quizzes.return_value.first.return_value = None
+            response = TopicQuizGenerate().post(request)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['topic_ids'], ['topic-1'])
+        self.assertEqual(response.data['source'], 'openai_generated')
+        self.assertNotIn('correct_index', response.data['questions'][0])
+        self.assertNotIn('explanation', response.data['questions'][0])
+        self.assertEqual(openai.call_args.kwargs['json']['model'], 'gpt-4o-mini')
+        payload = openai.call_args.kwargs['json']
+        self.assertEqual(payload['input'][1]['content'] and json.loads(payload['input'][1]['content'])['requested_question_count'], 1)
+        self.assertEqual(json.loads(payload['input'][1]['content'])['difficulty'], 'medium')
+        self.assertIn('Software Testing', json.loads(payload['input'][1]['content'])['selected_topics'][0]['title'])
+
+    def test_openai_provider_failures_return_specific_safe_error_codes(self):
+        from academics.views import TopicQuizGenerate
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 1, 'syllabus_token': 'test-token',
+        })
+        cached = {'subject_id': 'subject-1', 'topics': [{'id': 'topic-1', 'title': 'Software Testing'}], 'text': 'Software Testing\n' + ('Testing uses defined expected results. ' * 5)}
+        cases = [
+            (401, {'code': 'invalid_api_key', 'type': 'authentication_error'}, 'invalid_credentials', 502),
+            (429, {'code': 'insufficient_quota', 'type': 'insufficient_quota'}, 'insufficient_quota', 402),
+            (429, {'code': 'rate_limit_exceeded', 'type': 'requests'}, 'rate_limit', 429),
+            (400, {'code': 'model_not_found', 'param': 'model'}, 'model_configuration', 502),
+        ]
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), \
+                patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.cache.get', return_value=cached), \
+                patch('academics.views.TopicQuiz.objects') as quizzes:
+            subjects.get.return_value = self.subject
+            quizzes.return_value.first.return_value = None
+            for status_code, error, expected_code, expected_status in cases:
+                provider_response = SimpleNamespace(status_code=status_code, headers={'x-request-id': 'safe-id'}, json=lambda err=error: {'error': err})
+                with patch('academics.views.requests.post', return_value=provider_response):
+                    response = TopicQuizGenerate().post(request)
+                self.assertEqual(response.status_code, expected_status)
+                self.assertEqual(response.data['error']['code'], expected_code)
+                self.assertNotIn('test-key', json.dumps(response.data))
+
+    def test_connection_and_malformed_openai_responses_are_actionable(self):
+        import requests
+        from academics.views import TopicQuizGenerate
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 1, 'syllabus_token': 'test-token',
+        })
+        cached = {'subject_id': 'subject-1', 'topics': [{'id': 'topic-1', 'title': 'Software Testing'}], 'text': 'Software Testing\n' + ('Testing uses defined expected results. ' * 5)}
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), \
+                patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.cache.get', return_value=cached), \
+                patch('academics.views.TopicQuiz.objects') as quizzes:
+            subjects.get.return_value = self.subject
+            quizzes.return_value.first.return_value = None
+            with patch('academics.views.requests.post', side_effect=requests.ConnectionError('network unavailable')):
+                unavailable = TopicQuizGenerate().post(request)
+            malformed_response = SimpleNamespace(
+                status_code=200, headers={'x-request-id': 'safe-id'},
+                json=lambda: {'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': '{broken'}]}]},
+            )
+            with patch('academics.views.requests.post', return_value=malformed_response):
+                malformed = TopicQuizGenerate().post(request)
+        self.assertEqual(unavailable.status_code, 503)
+        self.assertEqual(unavailable.data['error']['code'], 'provider_unavailable')
+        self.assertEqual(malformed.status_code, 502)
+        self.assertEqual(malformed.data['error']['code'], 'invalid_generated_response')
+
+    def test_generated_quiz_database_failure_has_distinct_error(self):
+        from academics.views import TopicQuizGenerate
+        request = SimpleNamespace(user=SimpleNamespace(id=self.user_id), data={
+            'subject_id': 'subject-1', 'topic_ids': ['topic-1'], 'question_count': 1, 'syllabus_token': 'test-token',
+        })
+        cached = {'subject_id': 'subject-1', 'topics': [{'id': 'topic-1', 'title': 'Software Testing'}], 'text': 'Software Testing\n' + ('Testing uses defined expected results. ' * 5)}
+        generated = {'questions': [{'topic_id': 'topic-1', 'question': 'What defines a test case?', 'options': ['Inputs and expected output', 'A compiler', 'A database', 'A deployment'], 'correct_index': 0, 'explanation': 'The syllabus says this.'}]}
+        provider_response = SimpleNamespace(status_code=200, headers={}, json=lambda: {'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps(generated)}]}]})
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}), \
+                patch('academics.views.Subject.objects') as subjects, \
+                patch('academics.views.cache.get', return_value=cached), \
+                patch('academics.views.TopicQuiz.objects') as quizzes, \
+                patch('academics.views.requests.post', return_value=provider_response), \
+                patch.object(TopicQuiz, 'save', autospec=True, side_effect=ServerSelectionTimeoutError('db unavailable')):
+            subjects.get.return_value = self.subject
+            quizzes.return_value.first.return_value = None
+            response = TopicQuizGenerate().post(request)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data['error']['code'], 'database_save_failed')
+
+
+class QuizSyllabusUploadTests(SimpleTestCase):
+    @staticmethod
+    def syllabus_text():
+        return (
+            'Unit 1: Software Engineering\n'
+            '1.1 Software Testing\n'
+            'Software testing checks software against defined requirements and expected results. '
+            'Test cases describe inputs, actions, and observable outcomes for a program.\n'
+            '1.2 Testing Techniques\n'
+            'Testing techniques include black box and white box approaches. '
+            'Black box testing checks visible behavior; white box testing uses internal structure.\n'
+        )
+
+    def test_txt_bom_decodes_and_docx_extracts_paragraphs_and_tables(self):
+        from academics import syllabus_processor
+        with tempfile.TemporaryDirectory() as directory:
+            text_path = Path(directory) / 'syllabus.txt'
+            text_path.write_bytes(('\ufeff' + self.syllabus_text()).encode('utf-8'))
+            extracted, warning = syllabus_processor.extract_text(str(text_path), '.txt')
+            self.assertIsNone(warning)
+            self.assertIn('Unit 1', extracted)
+            self.assertNotIn('\ufeff', extracted)
+
+            from docx import Document
+            document = Document()
+            document.add_paragraph('Chapter One: Testing')
+            table = document.add_table(rows=1, cols=2)
+            table.rows[0].cells[0].text = 'Input'
+            table.rows[0].cells[1].text = 'Expected output'
+            docx_path = Path(directory) / 'syllabus.docx'
+            document.save(docx_path)
+            extracted_docx, warning = syllabus_processor.extract_text(str(docx_path), '.docx')
+        self.assertIsNone(warning)
+        self.assertIn('Chapter One: Testing', extracted_docx)
+        self.assertIn('Input | Expected output', extracted_docx)
+
+    def test_pdf_scanned_page_reports_ocr_required(self):
+        from academics import syllabus_processor
+        from pypdf import PdfWriter
+        buffer = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=100, height=100)
+        writer.write(buffer)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'scan.pdf'
+            path.write_bytes(buffer.getvalue())
+            extracted, warning = syllabus_processor.extract_text(str(path), '.pdf')
+        self.assertEqual(extracted.strip(), '')
+        self.assertIn('scanned', warning.lower())
+
+    def test_upload_validation_checks_extension_signature_content_and_size(self):
+        from academics import syllabus_processor
+        unsupported = SimpleUploadedFile('notes.exe', b'content', content_type='text/plain')
+        fake_pdf = SimpleUploadedFile('notes.pdf', b'not a pdf', content_type='application/pdf')
+        fake_docx = SimpleUploadedFile('notes.docx', b'not a zip', content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        empty = SimpleUploadedFile('empty.txt', b'', content_type='text/plain')
+        oversized = SimpleUploadedFile('large.txt', b'12345', content_type='text/plain')
+        for uploaded in (unsupported, fake_pdf, fake_docx, empty):
+            valid, message = syllabus_processor.validate_quiz_upload(uploaded)
+            self.assertFalse(valid)
+            self.assertTrue(message)
+        self.assertEqual(syllabus_processor.validate_quiz_upload(oversized, max_file_size=4)[0], False)
+        # Browser MIME declarations are not trusted; extension and actual text encoding are checked.
+        valid_txt = SimpleUploadedFile('valid.txt', self.syllabus_text().encode('utf-8'), content_type='application/pdf')
+        self.assertEqual(syllabus_processor.validate_quiz_upload(valid_txt), (True, None))
+
+    def test_upload_extracts_topics_without_mutating_saved_subject(self):
+        from academics.views import QuizSyllabusUpload
+        user_id = 'upload-student'
+        subject = SimpleNamespace(id='subject-upload', name='Software Engineering', topics=[], syllabus_files=[])
+        uploaded = SimpleUploadedFile('semester.txt', self.syllabus_text().encode('utf-8'), content_type='application/octet-stream')
+        request = SimpleNamespace(
+            user=SimpleNamespace(id=user_id), data={'subject_id': 'subject-upload'}, FILES={'file': uploaded},
+        )
+        with patch('academics.views.Subject.objects') as subjects, patch('academics.views.cache.set') as cache_set:
+            subjects.get.return_value = subject
+            response = QuizSyllabusUpload().post(request)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['file_type'], 'TXT')
+        self.assertEqual(response.data['extraction_status'], 'complete')
+        self.assertGreaterEqual(response.data['total_found'], 2)
+        self.assertIn('Software Testing', [topic['title'] for topic in response.data['topics']])
+        self.assertIn('Software testing checks', response.data['preview'])
+        self.assertEqual(subject.topics, [])
+        self.assertEqual(subject.syllabus_files, [])
+        self.assertTrue(cache_set.call_args.args[0].startswith(f'quiz-syllabus:{user_id}:'))
+        self.assertEqual(cache_set.call_args.kwargs['timeout'], 30 * 60)
+
+    def test_upload_enforces_configured_server_size_limit(self):
+        from academics.views import QuizSyllabusUpload
+        subject = SimpleNamespace(id='subject-upload', name='Software Engineering', topics=[], syllabus_files=[])
+        uploaded = SimpleUploadedFile('large.txt', self.syllabus_text().encode('utf-8'), content_type='text/plain')
+        request = SimpleNamespace(
+            user=SimpleNamespace(id='upload-student'), data={'subject_id': 'subject-upload'}, FILES={'file': uploaded},
+        )
+        with override_settings(QUIZ_SYLLABUS_MAX_FILE_SIZE=8), patch('academics.views.Subject.objects') as subjects:
+            subjects.get.return_value = subject
+            response = QuizSyllabusUpload().post(request)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['code'], 'invalid_syllabus_file')
+
+    def test_uploaded_syllabus_subject_is_owner_scoped(self):
+        from academics.views import QuizSyllabusUpload
+        request = SimpleNamespace(
+            user=SimpleNamespace(id='other-student'), data={'subject_id': 'private-subject'}, FILES={},
+        )
+        with patch('academics.views.Subject.objects') as subjects:
+            subjects.get.side_effect = DoesNotExist
+            response = QuizSyllabusUpload().post(request)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data['code'], 'subject_not_found')
+
+
 class StudyPlanSaveTests(SimpleTestCase):
     def test_duplicate_session_ids_are_rejected(self):
         request = SimpleNamespace(
@@ -706,3 +1174,195 @@ class LiveMongoStudyPlannerTests(SimpleTestCase):
         self.assertEqual(other_response.status_code, 200)
         self.assertIn('Private foreign assignment', other_response.data['answer'])
         self.assertNotIn('My pending assignment', other_response.data['answer'])
+
+    def test_topic_quiz_import_authenticated_attempts_persist_and_isolate(self):
+        user = User(
+            username=f'quiz-{uuid4()}@example.test',
+            email=f'quiz-{uuid4()}@example.test',
+        ).save()
+        other_user = User(
+            username=f'quiz-{uuid4()}@example.test',
+            email=f'quiz-{uuid4()}@example.test',
+        ).save()
+        user_id = str(user.id)
+        other_user_id = str(other_user.id)
+        subject = Subject(
+            user_id=user_id,
+            name='Software Engineering',
+            topics=[
+                SyllabusTopic(id='testing-topic', title='Software Testing'),
+                SyllabusTopic(id='design-topic', title='Software Design'),
+            ],
+        ).save()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            question_file = Path(temp_dir) / 'testing_quiz.json'
+            question_file.write_text(json.dumps({
+                'title': 'Testing Fundamentals',
+                'questions': [
+                    {'question': 'What does a test case define?', 'options': ['Input and expected output', 'Only source code'], 'correct_index': 0, 'explanation': 'A test case specifies an input and expected result.'},
+                    {'question': 'Which is a test level?', 'options': ['Unit testing', 'Linking'], 'correct_index': 0, 'explanation': 'Unit testing is a recognized testing level.'},
+                ],
+            }), encoding='utf-8')
+            call_command(
+                'seed_topic_quiz', user_id=user_id, subject_id=str(subject.id),
+                topic_id='testing-topic', file=str(question_file), stdout=StringIO(),
+            )
+
+        quiz = TopicQuiz.objects.get(user_id=user_id, subject_id=str(subject.id), topic_id='testing-topic')
+        self.assertEqual(quiz.source, 'author_created')
+        self.assertEqual(len(quiz.questions), 2)
+
+        client = APIClient()
+        unauthenticated = client.get(f'/api/academics/quizzes/{quiz.id}/')
+        self.assertEqual(unauthenticated.status_code, 403)
+        access_token, _ = make_tokens(user)
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+        quiz_list = client.get('/api/academics/quizzes/', {
+            'subject_id': str(subject.id), 'topic_id': 'testing-topic',
+        })
+        self.assertEqual(quiz_list.status_code, 200)
+        self.assertEqual(len(quiz_list.data), 1)
+        self.assertEqual(quiz_list.data[0]['subject_name'], 'Software Engineering')
+        self.assertEqual(quiz_list.data[0]['topic_name'], 'Software Testing')
+        unrelated_topic_list = client.get('/api/academics/quizzes/', {
+            'subject_id': str(subject.id), 'topic_id': 'design-topic',
+        })
+        self.assertEqual(unrelated_topic_list.status_code, 200)
+        self.assertEqual(unrelated_topic_list.data, [])
+
+        detail = client.get(f'/api/academics/quizzes/{quiz.id}/')
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(len(detail.data['questions']), 2)
+        self.assertNotIn('correct_index', detail.data['questions'][0])
+        self.assertNotIn('explanation', detail.data['questions'][0])
+
+        answer_payload = {'answers': [
+            {'question_id': quiz.questions[0].question_id, 'selected_index': 0},
+            {'question_id': quiz.questions[1].question_id, 'selected_index': 1},
+        ]}
+        manipulated = client.post(
+            f'/api/academics/quizzes/{quiz.id}/attempts/',
+            {**answer_payload, 'score': 100}, format='json',
+        )
+        self.assertEqual(manipulated.status_code, 400)
+        first_attempt = client.post(f'/api/academics/quizzes/{quiz.id}/attempts/', answer_payload, format='json')
+        second_attempt = client.post(f'/api/academics/quizzes/{quiz.id}/attempts/', answer_payload, format='json')
+        self.assertEqual((first_attempt.status_code, second_attempt.status_code), (201, 201))
+        self.assertEqual(first_attempt.data['score'], 50)
+        self.assertEqual(second_attempt.data['score'], first_attempt.data['score'])
+        self.assertEqual(first_attempt.data['correct_count'], 1)
+        self.assertEqual(first_attempt.data['incorrect_count'], 1)
+        self.assertIn('correct_index', first_attempt.data['answers'][0])
+        self.assertIn('recognized testing level', first_attempt.data['answers'][1]['explanation'])
+
+        history = client.get(f'/api/academics/quizzes/{quiz.id}/attempts/')
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(len(history.data), 2)
+        self.assertEqual(QuizAttempt.objects(user_id=user_id, quiz_id=str(quiz.id)).count(), 2)
+
+        other_access, _ = make_tokens(other_user)
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {other_access}')
+        self.assertEqual(client.get(f'/api/academics/quizzes/{quiz.id}/').status_code, 404)
+        self.assertEqual(client.get(f'/api/academics/quizzes/{quiz.id}/attempts/').status_code, 404)
+        self.assertEqual(client.post(f'/api/academics/quizzes/{quiz.id}/attempts/', answer_payload, format='json').status_code, 404)
+        self.assertEqual(QuizAttempt.objects(user_id=other_user_id, quiz_id=str(quiz.id)).count(), 0)
+
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+        bank_payload = {'subject_id': str(subject.id), 'topic_ids': ['testing-topic'], 'question_count': 2}
+        assembled = client.post('/api/academics/quizzes/create/', bank_payload, format='json')
+        repeated = client.post('/api/academics/quizzes/create/', bank_payload, format='json')
+        self.assertEqual(assembled.status_code, 201, assembled.data)
+        self.assertEqual(assembled.data['source'], 'question_bank')
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(assembled.data['id'], repeated.data['id'])
+        self.assertEqual(TopicQuiz.objects(user_id=user_id, source='question_bank').count(), 1)
+        self.assertEqual(len(assembled.data['questions']), 2)
+        self.assertEqual(assembled.data['topic_ids'], ['testing-topic'])
+
+    def test_generated_quiz_persists_and_is_retrievable_only_by_owner(self):
+        user = User(username=f'generated-quiz-{uuid4()}@example.test', email=f'generated-quiz-{uuid4()}@example.test').save()
+        other = User(username=f'generated-quiz-{uuid4()}@example.test', email=f'generated-quiz-{uuid4()}@example.test').save()
+        user_id = str(user.id)
+        subject = Subject(
+            user_id=user_id, name='Data Structures', topics=[], syllabus_files=[],
+        ).save()
+        client = APIClient()
+        access, _ = make_tokens(user)
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        unauthenticated_upload = APIClient().post('/api/academics/quizzes/syllabus/', {
+            'subject_id': str(subject.id),
+            'file': SimpleUploadedFile('no-auth.txt', b'private text', content_type='text/plain'),
+        })
+        self.assertEqual(unauthenticated_upload.status_code, 403)
+        upload_text = (
+            'Unit 1: Data Structures\n'
+            '1.1 Binary Trees\n'
+            + ('Binary trees contain nodes with at most two children. This structure supports hierarchical data and traversal. ' * 3)
+            + '\n1.2 Complexity Analysis\n'
+            + ('Time complexity describes how algorithm runtime changes as input size increases. It helps compare algorithms. ' * 3)
+        )
+        upload_response = client.post('/api/academics/quizzes/syllabus/', {
+            'subject_id': str(subject.id),
+            'file': SimpleUploadedFile('structures.txt', upload_text.encode('utf-8'), content_type='text/plain'),
+        })
+        self.assertEqual(upload_response.status_code, 200, upload_response.data)
+        self.assertEqual([topic['title'] for topic in upload_response.data['topics']], ['Binary Trees', 'Complexity Analysis'])
+        topic_ids = [topic['id'] for topic in upload_response.data['topics']]
+        generated = {'questions': [
+            {
+                'topic_id': topic_ids[0], 'question': 'Which property describes a binary tree?',
+                'options': ['Each node has at most two children', 'Each node has exactly four children', 'Nodes have no links', 'It is always balanced'],
+                'correct_index': 0, 'explanation': 'The syllabus describes the binary tree child limit.',
+            },
+            {
+                'topic_id': topic_ids[1], 'question': 'What does time complexity describe?',
+                'options': ['How runtime grows with input', 'The color of a node', 'The number of source files', 'A memory address'],
+                'correct_index': 0, 'explanation': 'The syllabus relates complexity to input size and runtime.',
+            },
+        ]}
+        fake_response = SimpleNamespace(
+            status_code=200, headers={'x-request-id': 'integration-test-request'},
+            json=lambda: {'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps(generated)}]}]},
+        )
+        generate_payload = {
+            'subject_id': str(subject.id), 'topic_ids': topic_ids, 'question_count': 2,
+            'difficulty': 'hard', 'syllabus_token': upload_response.data['upload_token'],
+        }
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'integration-test-key'}), \
+                patch('academics.views.requests.post', return_value=fake_response) as openai:
+            generated_response = client.post('/api/academics/quizzes/generate/', generate_payload, format='json')
+            repeated_response = client.post('/api/academics/quizzes/generate/', generate_payload, format='json')
+        self.assertEqual(generated_response.status_code, 201, generated_response.data)
+        self.assertEqual(repeated_response.status_code, 200)
+        self.assertEqual(generated_response.data['id'], repeated_response.data['id'])
+        openai.assert_called_once()
+        quiz_id = generated_response.data['id']
+        stored = TopicQuiz.objects.get(id=quiz_id, user_id=user_id)
+        self.assertEqual(stored.source, 'openai_generated')
+        self.assertEqual(stored.topic_ids, topic_ids)
+        self.assertEqual(stored.topic_names, ['Binary Trees', 'Complexity Analysis'])
+        self.assertEqual(stored.difficulty, 'hard')
+        self.assertEqual(subject.topics, [])  # Uploaded topics were not imported into the saved subject.
+        self.assertEqual(stored.questions[0].correct_index, 0)
+        self.assertEqual(stored.questions[0].difficulty, 'hard')
+        self.assertNotIn('correct_index', generated_response.data['questions'][0])
+        detail = client.get(f'/api/academics/quizzes/{quiz_id}/')
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data['questions'][0]['question_id'], stored.questions[0].question_id)
+        saved_list = client.get('/api/academics/quizzes/', {
+            'subject_id': str(subject.id), 'topic_id': topic_ids[0], 'upload_token': upload_response.data['upload_token'],
+        })
+        self.assertEqual(saved_list.status_code, 200)
+        self.assertEqual(len(saved_list.data), 1)
+        generated_attempt = client.post(f'/api/academics/quizzes/{quiz_id}/attempts/', {
+            'answers': [{'question_id': question['question_id'], 'selected_index': 0} for question in generated_response.data['questions']],
+        }, format='json')
+        self.assertEqual(generated_attempt.status_code, 201)
+        self.assertEqual(generated_attempt.data['score'], 100)
+        self.assertEqual(len(client.get(f'/api/academics/quizzes/{quiz_id}/attempts/').data), 1)
+        other_access, _ = make_tokens(other)
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {other_access}')
+        self.assertEqual(client.get(f'/api/academics/quizzes/{quiz_id}/').status_code, 404)
+        self.assertEqual(client.post('/api/academics/quizzes/syllabus/', {
+            'subject_id': str(subject.id), 'file': SimpleUploadedFile('private.txt', upload_text.encode('utf-8'), content_type='text/plain'),
+        }).status_code, 404)

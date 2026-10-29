@@ -17,6 +17,13 @@ from .views import (
     RescheduleStudyPlan,
     StudyInsights,
     AcademicAssistantAsk,
+    TopicQuizList,
+    TopicQuizGenerate,
+    TopicQuizAvailability,
+    TopicQuizCreateFromBank,
+    QuizSyllabusUpload,
+    TopicQuizDetail,
+    TopicQuizAttempts,
 )
 
 urlpatterns = [
@@ -43,4 +50,11 @@ urlpatterns = [
 
     path('insights/', StudyInsights.as_view(), name='study-insights'),
     path('assistant/ask/', AcademicAssistantAsk.as_view(), name='academic-assistant-ask'),
+    path('quizzes/', TopicQuizList.as_view(), name='topic-quizzes'),
+    path('quizzes/syllabus/', QuizSyllabusUpload.as_view(), name='quiz-syllabus-upload'),
+    path('quizzes/availability/', TopicQuizAvailability.as_view(), name='topic-quiz-availability'),
+    path('quizzes/create/', TopicQuizCreateFromBank.as_view(), name='topic-quiz-create'),
+    path('quizzes/generate/', TopicQuizGenerate.as_view(), name='topic-quiz-generate'),
+    path('quizzes/<str:quiz_id>/', TopicQuizDetail.as_view(), name='topic-quiz-detail'),
+    path('quizzes/<str:quiz_id>/attempts/', TopicQuizAttempts.as_view(), name='topic-quiz-attempts'),
 ]

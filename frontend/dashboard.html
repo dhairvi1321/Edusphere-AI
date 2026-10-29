@@ -38,6 +38,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke="currentColor" stroke-width="2"/></svg>
         Subjects
       </a>
+      <a href="javascript:void(0)" class="sidebar-link" data-section="quizzes">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 1 4 17.5v-12Z" stroke="currentColor" stroke-width="2"/><path d="M8 8h8M8 12h6M8 16h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        Quizzes
+      </a>
       <a href="javascript:void(0)" class="sidebar-link" data-section="assignments">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 2v4M8 2v4M3 10h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         Assignments
@@ -281,6 +285,104 @@
           <button type="button" class="assistant-suggestion" data-assistant-question="How much syllabus have I completed?">Syllabus progress</button>
         </div>
         <p class="assistant-note">Answers use your saved account data. Chat messages are kept in this page only.</p>
+      </div>
+    </section>
+
+    <!-- ===== TOPIC QUIZZES SECTION ===== -->
+    <section class="dash-section" id="section-quizzes">
+      <div class="dash-section-header">
+        <div>
+          <h1>Topic Quizzes</h1>
+          <p>Practice with questions connected to your saved subjects and syllabus topics.</p>
+        </div>
+      </div>
+      <div class="dash-card quiz-browser-card">
+        <div class="quiz-setup-grid">
+          <div class="form-group">
+            <label class="form-label" for="quizSubjectSelect">Subject</label>
+            <select id="quizSubjectSelect" class="form-input form-select">
+              <option value="">Choose a subject</option>
+            </select>
+          </div>
+          <section class="quiz-upload-panel" aria-labelledby="quizUploadHeading">
+            <div>
+              <h2 id="quizUploadHeading">Upload Syllabus</h2>
+              <p>Upload a PDF, DOCX, or UTF-8 TXT. The file is processed temporarily and is not added to saved subject files.</p>
+            </div>
+            <input id="quizSyllabusFile" class="sr-only" type="file" accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" disabled>
+            <div id="quizSyllabusDropzone" class="quiz-upload-dropzone" role="button" tabindex="0" aria-controls="quizSyllabusFile" aria-label="Choose or drop a syllabus file" aria-disabled="true">
+              <strong>Drop syllabus here or browse files</strong>
+              <span>PDF, DOCX, or TXT · server size limit applies</span>
+            </div>
+            <div class="quiz-upload-meta">
+              <p id="quizSyllabusFileMeta">No file selected</p>
+              <div class="quiz-upload-buttons">
+                <button id="quizUploadSyllabusBtn" class="btn btn-primary btn-sm" type="button" disabled>Upload and extract</button>
+                <button id="quizRemoveSyllabusBtn" class="btn btn-ghost btn-sm" type="button" hidden>Remove / replace</button>
+              </div>
+            </div>
+            <p id="quizSyllabusStatus" class="quiz-status" role="status">Choose a saved subject before uploading.</p>
+            <details id="quizSyllabusPreviewPanel" class="quiz-syllabus-preview" hidden>
+              <summary id="quizSyllabusSummary">Extracted syllabus preview</summary>
+              <pre id="quizSyllabusPreview"></pre>
+            </details>
+          </section>
+          <section class="quiz-topic-picker" aria-labelledby="quizTopicsHeading">
+            <div class="quiz-picker-heading">
+              <div>
+                <h2 id="quizTopicsHeading">Choose topics</h2>
+                <p id="quizTopicSelectionCount" aria-live="polite">Select a subject first</p>
+              </div>
+              <div class="quiz-picker-actions">
+                <button id="quizSelectAllTopics" class="btn btn-ghost btn-sm" type="button" disabled>Select all</button>
+                <button id="quizClearTopics" class="btn btn-ghost btn-sm" type="button" disabled>Clear</button>
+              </div>
+            </div>
+            <label class="quiz-search-label" for="quizTopicSearch">
+              <span class="sr-only">Search topics</span>
+              <input id="quizTopicSearch" class="form-input" type="search" placeholder="Search topics" disabled>
+            </label>
+            <div id="quizTopicCheckboxes" class="quiz-topic-checkboxes" role="group" aria-label="Syllabus topics">
+              <p class="quiz-empty-state">Choose a subject to see its syllabus topics.</p>
+            </div>
+          </section>
+          <div class="quiz-settings-row">
+            <div class="quiz-count-control">
+              <label class="form-label" for="quizQuestionCount">Number of Questions</label>
+              <div class="quiz-count-input-wrap">
+                <input id="quizQuestionCount" class="form-input" type="number" min="1" max="20" value="5" inputmode="numeric" aria-describedby="quizCountHelp quizCountError">
+                <span id="quizAvailableCount" class="quiz-availability">Choose topic(s) to check availability</span>
+              </div>
+              <small id="quizCountHelp" class="quiz-field-help">Choose between 1 and 20 questions.</small>
+              <small id="quizCountError" class="quiz-field-error" role="alert"></small>
+            </div>
+            <div class="quiz-difficulty-control">
+              <label class="form-label" for="quizDifficulty">Difficulty</label>
+              <select id="quizDifficulty" class="form-input form-select">
+                <option value="easy">Easy</option>
+                <option value="medium" selected>Medium</option>
+                <option value="hard">Hard</option>
+              </select>
+            </div>
+            <div class="quiz-summary" aria-live="polite">
+              <strong>Quiz summary</strong>
+              <span id="quizSummarySubject">Subject: —</span>
+              <span id="quizSummaryTopics">Topics selected: 0</span>
+              <span id="quizSummaryCount">Questions requested: 5</span>
+              <span id="quizSummaryDifficulty">Difficulty: Medium</span>
+            </div>
+          </div>
+          <div class="quiz-actions">
+            <button id="createBankQuizBtn" class="btn btn-primary" type="button" disabled>Create quiz from question bank</button>
+            <button id="loadTopicQuizzesBtn" class="btn btn-ghost" type="button" disabled>Find saved quizzes</button>
+            <button id="generateTopicQuizBtn" class="btn btn-ghost" type="button" disabled>AI Quiz Generation — Coming Soon</button>
+          </div>
+          <p class="quiz-status" role="note">Local AI-powered quiz generation is under development and will be available in a future update.</p>
+        </div>
+        <div id="quizListStatus" class="quiz-status" role="status">Saved question-bank quizzes work without AI configuration. Select a subject and topics to begin.</div>
+        <div id="topicQuizList" class="topic-quiz-list"></div>
+        <div id="topicQuizDetail" class="topic-quiz-detail"></div>
+        <div id="quizAttemptHistory" class="quiz-attempt-history"></div>
       </div>
     </section>
 

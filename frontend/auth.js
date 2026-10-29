@@ -99,14 +99,17 @@ const Auth = {
 
   async apiFetch(path, options = {}) {
     const token = this.getToken();
+    const { throwOnError = false, ...fetchOptions } = options;
+    const isFormData = typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData;
+    const requestHeaders = {
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(fetchOptions.headers || {})
+    };
     try {
       const res = await fetch(`${API}${path}`, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(options.headers || {})
-        }
+        ...fetchOptions,
+        headers: requestHeaders
       });
       if (res.status === 401) {
         if (!this._loggingOut) {
@@ -119,12 +122,14 @@ const Auth = {
       if (!res.ok) {
         let errBody = null;
         try { errBody = await res.json(); } catch { /* no body */ }
-        console.error(`API ${options.method || 'GET'} ${path} → ${res.status}`, errBody);
+        console.error(`API ${fetchOptions.method || 'GET'} ${path} → ${res.status}`, errBody);
+        if (throwOnError) throw new Error(errBody?.detail || `Request failed (${res.status}).`);
         return null;
       }
       return res.json();
     } catch (err) {
       console.error(`apiFetch network error on ${path}:`, err);
+      if (throwOnError) throw (err instanceof TypeError ? new Error('Cannot connect to the server. Please try again.') : err);
       return null;
     }
   }

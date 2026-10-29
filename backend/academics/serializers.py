@@ -97,3 +97,58 @@ class StudyPlanSerializer(serializers.Serializer):
             'sessions': list(obj.sessions or []),
             'created_at': str(obj.created_at),
         }
+
+
+class QuizAnswerSubmissionSerializer(serializers.Serializer):
+    question_id = serializers.CharField(max_length=100)
+    selected_index = serializers.IntegerField(min_value=0, max_value=5)
+
+
+class QuizAttemptSubmissionSerializer(serializers.Serializer):
+    answers = serializers.ListField(child=QuizAnswerSubmissionSerializer(), allow_empty=False)
+
+
+def serialize_topic_quiz_summary(quiz, subject, topic):
+    topics = topic if isinstance(topic, list) else [topic]
+    topic_ids = list(getattr(quiz, 'topic_ids', []) or [quiz.topic_id])
+    topic_names = list(getattr(quiz, 'topic_names', []) or [item.title for item in topics])
+    return {
+        'id': str(quiz.id),
+        'title': quiz.title,
+        'subject_id': str(subject.id),
+        'subject_name': subject.name,
+        'topic_id': topic_ids[0],
+        'topic_ids': topic_ids,
+        'topic_name': ', '.join(topic_names),
+        'topic_names': topic_names,
+        'question_count': len(quiz.questions or []),
+        'source': quiz.source,
+        'difficulty': getattr(quiz, 'difficulty', 'medium'),
+    }
+
+
+def serialize_topic_quiz_questions(quiz, subject, topic):
+    """Return attemptable questions without answer keys or correctness data."""
+    data = serialize_topic_quiz_summary(quiz, subject, topic)
+    data['questions'] = [
+        {'question_id': question.question_id, 'text': question.text, 'options': list(question.options or []), 'topic_id': question.topic_id or quiz.topic_id}
+        for question in (quiz.questions or [])
+    ]
+    return data
+
+
+def serialize_quiz_attempt(attempt):
+    return {
+        'id': str(attempt.id),
+        'quiz_id': attempt.quiz_id,
+        'subject_id': attempt.subject_id,
+        'topic_id': attempt.topic_id,
+        'topic_ids': list(attempt.topic_ids or [attempt.topic_id]),
+        'quiz_title': attempt.quiz_title,
+        'score': attempt.score,
+        'correct_count': attempt.correct_count,
+        'incorrect_count': attempt.incorrect_count,
+        'total_questions': attempt.total_questions,
+        'created_at': attempt.created_at.isoformat() if attempt.created_at else None,
+        'answers': list(attempt.answers or []),
+    }
