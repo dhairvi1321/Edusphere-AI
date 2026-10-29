@@ -885,7 +885,6 @@ document.getElementById('generatePlanBtn').addEventListener('click', () => {
   document.getElementById('planStartDate').value = '';
   document.getElementById('planEndDate').value = '';
   document.getElementById('planDailyHours').value = '2';
-  document.getElementById('planFiles').value = '';
 
   // Render exam checkboxes
   const examBox = document.getElementById('planExamCheckboxes');
@@ -920,28 +919,25 @@ document.getElementById('generatePlanForm').addEventListener('submit', async e =
 
   const selectedExams = [...document.querySelectorAll('.plan-exam-cb:checked')].map(c => c.value);
   const selectedSubjects = [...document.querySelectorAll('.plan-subject-cb:checked')].map(c => c.value);
-  const files = document.getElementById('planFiles').files;
-
-  const hasFiles = files && files.length > 0;
   let res, rawStatus;
 
-  // Always use FormData so files, exam_ids, and subject_ids are sent uniformly.
-  const fd = new FormData();
-  fd.append('start_date', start_date);
-  fd.append('end_date', end_date);
-  fd.append('daily_hours', daily_hours);
-  selectedExams.forEach(id => fd.append('exam_ids', id));
-  selectedSubjects.forEach(id => fd.append('subject_ids', id));
-  if (hasFiles) {
-    for (const f of files) fd.append('files', f);
-  }
+  const payload = {
+    start_date,
+    end_date,
+    daily_hours,
+    exam_ids: selectedExams,
+    subject_ids: selectedSubjects,
+  };
 
   let raw;
   try {
     raw = await fetch('http://127.0.0.1:8000/api/academics/study-plans/generate/', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${Auth.getToken()}` },
-      body: fd,
+      headers: {
+        Authorization: `Bearer ${Auth.getToken()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
     });
   } catch (networkErr) {
     showToast('Network error — could not reach the server.', 'error');
@@ -974,11 +970,6 @@ document.getElementById('generatePlanForm').addEventListener('submit', async e =
   generatedPlanMeta = { title, start_date, end_date, daily_hours };
 
   closeModal('generatePlanModal');
-
-  // Warn about any file processing issues
-  if (res.file_warnings && res.file_warnings.length) {
-    showToast('⚠ ' + res.file_warnings[0], 'error');
-  }
 
   // Show generated plan preview
   const wrap = document.getElementById('generatedPlanWrap');

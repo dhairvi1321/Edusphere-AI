@@ -900,46 +900,7 @@ class GenerateStudyPlan(APIView):
             filter_subject_ids=subject_ids or None,
         )
 
-        # Extra topics from uploaded files (PDF/DOCX/PPTX/TXT)
-        extra_topics = []
-        file_warnings = []
-        for uploaded_file in request.FILES.getlist('files'):
-            ok, err = syllabus_processor.validate_upload(uploaded_file)
-            if not ok:
-                file_warnings.append(f"{uploaded_file.name}: {err}")
-                continue
-            tmp_path = os.path.join(settings.MEDIA_ROOT, 'syllabus', f"{uuid.uuid4()}_{uploaded_file.name}")
-            os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
-            try:
-                with open(tmp_path, 'wb+') as f:
-                    for chunk in uploaded_file.chunks():
-                        f.write(chunk)
-                ext = os.path.splitext(uploaded_file.name)[1]
-                text, warning = syllabus_processor.extract_text(tmp_path, ext)
-                if warning:
-                    file_warnings.append(f"{uploaded_file.name}: {warning}")
-                if text.strip():
-                    parsed = syllabus_processor.parse_topics(text, subject_name=uploaded_file.name)
-                    if not parsed:
-                        file_warnings.append(f"{uploaded_file.name}: No topics could be extracted from this file.")
-                    label = uploaded_file.name
-                    for t in parsed:
-                        extra_topics.append({
-                            'subject': label,
-                            'subject_id': '',
-                            'topic': t['title'],
-                            'topic_id': str(uuid.uuid4()),
-                            '_exam_key': datetime.max.date(),
-                            '_assignment_key': (2, datetime.max.date(), 3),
-                            '_difficulty_key': 1,
-                        })
-                else:
-                    file_warnings.append(f"{uploaded_file.name}: File produced no readable text.")
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-
-        combined_pool = topic_pool + extra_topics
+        combined_pool = topic_pool
         total_days = (end - start).days + 1
         sessions = _schedule_sessions(combined_pool, start, end, daily_hours)
 
@@ -953,7 +914,7 @@ class GenerateStudyPlan(APIView):
                         detail = 'None of the selected subjects were found for your account.'
                     elif all(not (s.topics or []) for s in matched):
                         names = ', '.join(s.name for s in matched)
-                        detail = f'The selected subject(s) ({names}) have no topics. Add topics first, or upload a syllabus file.'
+                        detail = f'The selected subject(s) ({names}) have no topics. Add topics first.'
                     else:
                         detail = 'All topics in the selected subjects are already marked as completed.'
                 elif not all_subjects:
@@ -962,8 +923,6 @@ class GenerateStudyPlan(APIView):
                     detail = 'None of your subjects have topics. Add topics to a subject first.'
                 else:
                     detail = 'All your topics are already marked as completed.'
-                if file_warnings:
-                    detail += ' File issue(s): ' + '; '.join(file_warnings)
                 return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
             else:
                 # Pool has topics but none fit in the date range
@@ -979,6 +938,5 @@ class GenerateStudyPlan(APIView):
             'total_days': total_days,
             'scheduled_topics': len(sessions),
             'unscheduled_topics': len(combined_pool) - len(sessions),
-            'file_warnings': file_warnings,
             'message': 'Study plan generated successfully.',
         })
