@@ -336,20 +336,54 @@ function renderExams() {
 
 /* ===== SUBJECT CRUD ===== */
 document.getElementById('addSubjectBtn').addEventListener('click', () => {
+  currentUploadSubjectId = null;
   document.getElementById('subjectModalTitle').textContent = 'Add Subject';
   document.getElementById('subjectId').value = '';
   document.getElementById('subjectName').value = '';
   document.getElementById('subjectDesc').value = '';
+  const filesGroup = document.getElementById('subjectFilesGroup');
+  if (filesGroup) filesGroup.style.display = 'none';
+  const fileInput = document.getElementById('syllabusFileInput');
+  if (fileInput) fileInput.value = '';
+  const filesList = document.getElementById('subjectFilesList');
+  if (filesList) filesList.innerHTML = '';
   openModal('subjectModal');
 });
 
 function openEditSubject(id) {
   const s = subjects.find(x => x.id === id);
+  if (!s) return;
+  currentUploadSubjectId = s.id;
   document.getElementById('subjectModalTitle').textContent = 'Edit Subject';
   document.getElementById('subjectId').value = s.id;
   document.getElementById('subjectName').value = s.name;
   document.getElementById('subjectDesc').value = s.description || '';
+  const filesGroup = document.getElementById('subjectFilesGroup');
+  if (filesGroup) {
+    filesGroup.style.display = 'block';
+    renderSubjectModalFiles(s);
+  }
+  const fileInput = document.getElementById('syllabusFileInput');
+  if (fileInput) fileInput.value = '';
   openModal('subjectModal');
+}
+
+function renderSubjectModalFiles(subject) {
+  const el = document.getElementById('subjectFilesList');
+  if (!el) return;
+  const files = subject?.syllabus_files || [];
+  if (!files.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:0.75rem;padding:4px 0">No syllabus files uploaded yet.</div>';
+    return;
+  }
+  el.innerHTML = files.map(f => `
+    <div class="syllabus-file-item">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="2"/><polyline points="14 2 14 8 20 8" stroke="currentColor" stroke-width="2"/></svg>
+      <span>${f.name}</span>
+      <button type="button" class="icon-btn danger" onclick="deleteSyllabusFile('${subject.id}', '${f.filename}')" title="Remove file">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>`).join('');
 }
 
 document.getElementById('subjectForm').addEventListener('submit', async e => {
@@ -361,8 +395,20 @@ document.getElementById('subjectForm').addEventListener('submit', async e => {
   const res = id
     ? await Auth.apiFetch(`/academics/subjects/${id}/`, { method: 'PUT', body: JSON.stringify(body) })
     : await Auth.apiFetch('/academics/subjects/', { method: 'POST', body: JSON.stringify(body) });
-  if (res !== null) { closeModal('subjectModal'); showToast(id ? 'Subject updated!' : 'Subject added!'); await loadAll(); }
-  else showToast('Something went wrong. Check the browser console for details.', 'error');
+  if (res !== null) {
+    const subjectId = id || res.id;
+    const fileInput = document.getElementById('syllabusFileInput');
+    const pendingFile = fileInput?.files?.[0];
+    if (pendingFile && subjectId) {
+      fileInput.value = '';
+      closeModal('subjectModal');
+      await uploadSyllabusFile(subjectId, pendingFile);
+    } else {
+      closeModal('subjectModal');
+      showToast(id ? 'Subject updated!' : 'Subject added!');
+      await loadAll();
+    }
+  } else showToast('Something went wrong. Check the browser console for details.', 'error');
 });
 
 async function deleteSubject(id) {
@@ -545,50 +591,116 @@ let syllabusReviewState = null;  // { subjectId, filename, topics }
 
 function openUploadSyllabus(subjectId) {
   currentUploadSubjectId = subjectId;
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.pdf,.docx,.txt,.pptx';
-  input.onchange = async () => {
-    const file = input.files[0];
-    if (!file) return;
-    const formData = new FormData();
-    formData.append('file', file);
-    showToast('Uploading file…');
-    const res = await fetch(`http://127.0.0.1:8000/api/academics/subjects/${subjectId}/files/`, {
+  const fileInput = document.getElementById('syllabusFileInput');
+  if (fileInput) {
+    fileInput.value = '';
+    fileInput.click();
+  } else {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.pdf,.docx,.txt,.pptx';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (file) await uploadSyllabusFile(subjectId, file);
+    };
+    input.click();
+  }
+}
+
+async function uploadSyllabusFile(subjectId, file) {
+  if (!file) return;
+  console.log(`[Syllabus] Initiating upload: "${file.name}" (${file.size} bytes) for subject ID "${subjectId}"`);
+
+  const allowed = ['.pdf', '.docx', '.txt', '.pptx'];
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (!allowed.includes(ext)) {
+    const msg = `Unsupported file type "${ext}". Allowed: PDF, DOCX, TXT, PPTX`;
+    console.error(`[Syllabus] ${msg}`);
+    showToast(msg, 'error');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  showToast('Uploading syllabus file…');
+
+  let res, data;
+  try {
+    res = await fetch(`${API}/academics/subjects/${subjectId}/files/`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${Auth.getToken()}` },
       body: formData
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      showToast(err.detail || 'Upload failed.', 'error');
-      return;
-    }
-    const data = await res.json();
-    showToast('File uploaded! Extracting topics…');
-    await loadAll();
-    // Find the filename that was just added (last in the list)
-    const subject = subjects.find(s => s.id === subjectId);
-    const files = subject?.syllabus_files || [];
-    const uploaded = files[files.length - 1];
-    if (uploaded?.filename) {
-      await openSyllabusReview(subjectId, uploaded.filename, uploaded.name);
-    }
-  };
-  input.click();
-}
-
-async function openSyllabusReview(subjectId, filename, displayName) {
-  const res = await fetch(
-    `http://127.0.0.1:8000/api/academics/subjects/${subjectId}/files/${filename}/extract/`,
-    { method: 'POST', headers: { Authorization: `Bearer ${Auth.getToken()}` } }
-  );
-  const data = await res.json().catch(() => null);
-  if (!res.ok || !data) {
-    showToast(data?.detail || 'Could not extract topics from file.', 'error');
+    data = await res.json().catch(() => ({}));
+  } catch (netErr) {
+    console.error('[Syllabus] Network error during upload request:', netErr);
+    showToast('Network error: could not connect to server.', 'error');
     return;
   }
 
+  if (!res.ok) {
+    const errorMsg = data?.detail || `Upload failed (HTTP ${res.status}).`;
+    console.error(`[Syllabus] Upload failed (HTTP ${res.status}):`, errorMsg);
+    showToast(errorMsg, 'error');
+    return;
+  }
+
+  console.log('[Syllabus] Upload successful, server response:', data);
+  showToast('File uploaded! Extracting topics…');
+
+  const uploaded = (data.syllabus_files && data.syllabus_files[data.syllabus_files.length - 1]);
+  await loadAll();
+
+  // If the subject modal is currently open, refresh its syllabus file list
+  const currentSub = subjects.find(s => s.id === subjectId);
+  if (currentSub) renderSubjectModalFiles(currentSub);
+
+  if (uploaded?.filename) {
+    await openSyllabusReview(subjectId, uploaded.filename, uploaded.name);
+  } else {
+    console.warn('[Syllabus] Uploaded file entry missing from response');
+  }
+}
+
+const syllabusFileInput = document.getElementById('syllabusFileInput');
+if (syllabusFileInput) {
+  syllabusFileInput.addEventListener('change', async e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const subjectId = currentUploadSubjectId || document.getElementById('subjectId').value;
+    if (!subjectId) {
+      console.warn('[Syllabus] File selected but no subject is active.');
+      showToast('Please select or save a subject first.', 'error');
+      return;
+    }
+    await uploadSyllabusFile(subjectId, file);
+    e.target.value = '';
+  });
+}
+
+async function openSyllabusReview(subjectId, filename, displayName) {
+  console.log(`[Syllabus] Extraction API request: subject=${subjectId}, file=${filename}`);
+  let res, data;
+  try {
+    res = await fetch(
+      `${API}/academics/subjects/${subjectId}/files/${encodeURIComponent(filename)}/extract/`,
+      { method: 'POST', headers: { Authorization: `Bearer ${Auth.getToken()}` } }
+    );
+    data = await res.json().catch(() => null);
+  } catch (netErr) {
+    console.error('[Syllabus] Network error during extraction request:', netErr);
+    showToast('Network error: could not connect to server.', 'error');
+    return;
+  }
+
+  if (!res.ok || !data) {
+    const errDetail = data?.detail || 'Could not extract topics from file.';
+    console.error(`[Syllabus] Extraction failed:`, errDetail);
+    showToast(errDetail, 'error');
+    return;
+  }
+
+  console.log(`[Syllabus] Extraction successful: ${data.total_found} topic(s) found`, data.topics);
   syllabusReviewState = { subjectId, filename, topics: data.topics || [] };
 
   document.getElementById('syllabusReviewMeta').textContent =
@@ -602,7 +714,7 @@ async function openSyllabusReview(subjectId, filename, displayName) {
     warnEl.style.display = 'none';
   }
 
-  renderSyllabusTopicsList(data.topics);
+  renderSyllabusTopicsList(data.topics || []);
   openModal('syllabusReviewModal');
 }
 
@@ -618,7 +730,7 @@ function renderSyllabusTopicsList(topics) {
         style="cursor:pointer;flex-shrink:0" />
       <div style="flex:1;min-width:0">
         <input type="text" class="syllabus-topic-title form-input" data-index="${i}"
-          value="${t.title.replace(/"/g, '&quot;')}"
+          value="${(t.title || '').replace(/"/g, '&quot;')}"
           style="height:32px;padding:0 10px;font-size:0.82rem;width:100%" />
         ${t.unit ? `<div style="color:var(--muted);font-size:0.68rem;margin-top:2px">${t.unit}</div>` : ''}
       </div>
@@ -651,38 +763,61 @@ document.getElementById('syllabusImportBtn').addEventListener('click', async () 
   const selected = [];
   checks.forEach((c, i) => {
     if (c.checked) {
-      selected.push({
-        title: titles[i].value.trim(),
-        difficulty: diffs[i].value,
-      });
+      const tVal = titles[i].value.trim();
+      if (tVal) {
+        selected.push({
+          title: tVal,
+          difficulty: diffs[i].value,
+        });
+      }
     }
   });
 
   if (!selected.length) { showToast('No topics selected.', 'error'); return; }
 
+  console.log(`[Syllabus] Importing ${selected.length} topic(s) to subject "${subjectId}" (skip_duplicates=${skipDupes})`);
   const res = await Auth.apiFetch(`/academics/subjects/${subjectId}/topics/import/`, {
     method: 'POST',
     body: JSON.stringify({ topics: selected, skip_duplicates: skipDupes })
   });
 
   if (res) {
+    console.log('[Syllabus] Import API successful:', res);
     closeModal('syllabusReviewModal');
     showToast(`Imported ${res.added} topic(s)${res.skipped ? `, skipped ${res.skipped} duplicate(s)` : ''}.`);
     syllabusReviewState = null;
     await loadAll();
+    const currentSub = subjects.find(s => s.id === subjectId);
+    if (currentSub) renderSubjectModalFiles(currentSub);
   } else {
+    console.error('[Syllabus] Topic import API request failed');
     showToast('Import failed.', 'error');
   }
 });
 
 async function deleteSyllabusFile(subjectId, filename) {
   if (!confirm('Remove this file?')) return;
-  const res = await fetch(`http://127.0.0.1:8000/api/academics/subjects/${subjectId}/files/${filename}/`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${Auth.getToken()}` }
-  });
-  if (res.ok) { showToast('File removed.'); await loadAll(); }
-  else showToast('Failed to remove file.', 'error');
+  console.log(`[Syllabus] Deleting file: subject=${subjectId}, file=${filename}`);
+  let res;
+  try {
+    res = await fetch(`${API}/academics/subjects/${subjectId}/files/${encodeURIComponent(filename)}/`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${Auth.getToken()}` }
+    });
+  } catch (err) {
+    console.error('[Syllabus] Network error during file deletion:', err);
+    showToast('Network error while deleting file.', 'error');
+    return;
+  }
+  if (res.ok) {
+    showToast('File removed.');
+    await loadAll();
+    const currentSub = subjects.find(s => s.id === subjectId);
+    if (currentSub) renderSubjectModalFiles(currentSub);
+  } else {
+    console.error('[Syllabus] Failed to remove file, status:', res.status);
+    showToast('Failed to remove file.', 'error');
+  }
 }
 
 /* ===== STUDY PLAN ===== */

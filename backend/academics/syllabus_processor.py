@@ -8,8 +8,10 @@ import io
 ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.pptx'}
 ALLOWED_MIME_TYPES = {
     'application/pdf',
+    'application/x-pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/octet-stream',
     'text/plain',
 }
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
