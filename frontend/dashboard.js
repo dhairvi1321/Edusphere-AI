@@ -226,7 +226,9 @@ function renderSubjects() {
             <div class="topic-check ${t.is_completed ? 'done' : ''}" onclick="toggleTopic('${t.id}', ${!t.is_completed})"></div>
             <span class="topic-name ${t.is_completed ? 'done' : ''}">${t.title}</span>
             <span class="difficulty-badge difficulty-${t.difficulty || 'medium'}">${t.difficulty || 'medium'}</span>
-            <button class="icon-btn" onclick="openEditTopic('${t.id}', '${t.title.replace(/'/g, "\\'").replace(/"/g, '&quot;')}', '${t.difficulty || 'medium'}')" title="Edit topic">
+            ${t.status === 'in_progress' ? '<span class="difficulty-badge" style="background:rgba(56,189,248,0.12);color:#38bdf8">In Progress</span>' : ''}
+            ${t.revision_required ? '<span class="difficulty-badge" style="background:rgba(251,191,36,0.14);color:#fbbf24">Revision</span>' : ''}
+            <button class="icon-btn" onclick="openEditTopic('${t.id}', '${t.title.replace(/'/g, "\\'").replace(/"/g, '&quot;')}', '${t.difficulty || 'medium'}', '${t.status || (t.is_completed ? 'completed' : 'not_started')}', ${t.revision_required === true})" title="Edit topic">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
             <button class="icon-btn danger" onclick="deleteTopic('${t.id}')" title="Delete topic">
@@ -445,10 +447,12 @@ async function toggleTopic(id, completed) {
   await loadAll();
 }
 
-function openEditTopic(id, title, difficulty) {
+function openEditTopic(id, title, difficulty, topicStatus, revisionRequired) {
   document.getElementById('editTopicId').value = id;
   document.getElementById('editTopicTitle').value = title;
   document.getElementById('editTopicDifficulty').value = difficulty;
+  document.getElementById('editTopicStatus').value = topicStatus || 'not_started';
+  document.getElementById('editTopicRevisionRequired').checked = revisionRequired === true;
   openModal('editTopicModal');
 }
 
@@ -458,6 +462,8 @@ document.getElementById('editTopicForm').addEventListener('submit', async e => {
   const body = {
     title: document.getElementById('editTopicTitle').value.trim(),
     difficulty: document.getElementById('editTopicDifficulty').value,
+    status: document.getElementById('editTopicStatus').value,
+    revision_required: document.getElementById('editTopicRevisionRequired').checked,
   };
   const res = await Auth.apiFetch(`/academics/topics/${id}/`, { method: 'PATCH', body: JSON.stringify(body) });
   if (res) { closeModal('editTopicModal'); showToast('Topic updated!'); await loadAll(); }
@@ -1001,18 +1007,24 @@ document.getElementById('generatePlanForm').addEventListener('submit', async e =
 
 document.getElementById('savePlanBtn').addEventListener('click', async () => {
   if (!generatedSessions || !generatedPlanMeta) return;
-  const res = await Auth.apiFetch('/academics/study-plans/', {
-    method: 'POST',
-    body: JSON.stringify({ ...generatedPlanMeta, sessions: generatedSessions })
-  });
-  if (res) {
-    showToast('Study plan saved!');
-    document.getElementById('generatedPlanWrap').style.display = 'none';
-    document.getElementById('savePlanBtn').style.display = 'none';
-    generatedSessions = null;
-    generatedPlanMeta = null;
-    await loadAll();
-  } else showToast('Save failed.', 'error');
+  const button = document.getElementById('savePlanBtn');
+  button.disabled = true;
+  try {
+    const res = await Auth.apiFetch('/academics/study-plans/', {
+      method: 'POST',
+      body: JSON.stringify({ ...generatedPlanMeta, sessions: generatedSessions })
+    });
+    if (res) {
+      showToast('Study plan saved!');
+      document.getElementById('generatedPlanWrap').style.display = 'none';
+      button.style.display = 'none';
+      generatedSessions = null;
+      generatedPlanMeta = null;
+      await loadAll();
+    } else showToast('Save failed.', 'error');
+  } finally {
+    button.disabled = false;
+  }
 });
 
 async function deleteStudyPlan(id) {
@@ -1032,12 +1044,8 @@ async function toggleSession(planId, sessionId, completed, checkbox) {
     body: JSON.stringify({ session_id: sessionId, is_completed: completed })
   });
   if (res) {
-    const plan = studyPlans.find(p => p.id === planId);
-    if (plan) {
-      const s = (plan.sessions || []).find(s => s.session_id === sessionId);
-      if (s) s.is_completed = completed;
-    }
-    renderStudyPlans();
+    await loadAll();
+    showToast(completed ? 'Session completed.' : 'Session marked pending.');
   } else {
     checkbox.checked = !completed; // revert visual state
     checkbox.disabled = false;

@@ -8,6 +8,8 @@ class SyllabusTopicSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=200)
     is_completed = serializers.BooleanField(default=False)
     difficulty = serializers.ChoiceField(choices=['easy', 'medium', 'hard'], default='medium')
+    status = serializers.ChoiceField(choices=['not_started', 'in_progress', 'completed'], default='not_started')
+    revision_required = serializers.BooleanField(default=False)
 
 
 class SubjectSerializer(serializers.Serializer):
@@ -26,6 +28,12 @@ class SubjectSerializer(serializers.Serializer):
                 'title': t.title,
                 'is_completed': t.is_completed,
                 'difficulty': t.difficulty or 'medium',
+                'status': 'completed' if t.is_completed else (
+                    getattr(t, 'status', None)
+                    if getattr(t, 'status', None) in ('not_started', 'in_progress', 'completed')
+                    else 'not_started'
+                ),
+                'revision_required': bool(getattr(t, 'revision_required', False)),
             }
             for t in (obj.topics or [])
         ]

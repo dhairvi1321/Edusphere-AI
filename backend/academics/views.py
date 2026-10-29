@@ -1,6 +1,8 @@
 import uuid
 import os
+from functools import wraps
 from mongoengine.errors import DoesNotExist, ValidationError as MongoValidationError
+from pymongo.errors import PyMongoError
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import permissions, status
@@ -14,6 +16,20 @@ from . import syllabus_processor
 
 def uid(request):
     return str(request.user.id)
+
+
+def handle_database_errors(view_method):
+    """Return a clear 503 response when MongoDB is temporarily unavailable."""
+    @wraps(view_method)
+    def wrapped(self, request, *args, **kwargs):
+        try:
+            return view_method(self, request, *args, **kwargs)
+        except PyMongoError:
+            return Response(
+                {'detail': 'Study planner storage is temporarily unavailable. Please try again.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+    return wrapped
 
 
 # ── Subjects ──────────────────────────────────────────────────────────────────
@@ -241,15 +257,36 @@ class TopicListCreate(APIView):
         difficulty = request.data.get('difficulty', 'medium')
         if difficulty not in ('easy', 'medium', 'hard'):
             difficulty = 'medium'
+        topic_status = request.data.get('status')
+        if topic_status is None:
+            topic_completed = request.data.get('is_completed', False)
+            if not isinstance(topic_completed, bool):
+                return Response({'detail': 'is_completed must be a boolean.'}, status=status.HTTP_400_BAD_REQUEST)
+            topic_status = 'completed' if topic_completed else 'not_started'
+        if topic_status not in ('not_started', 'in_progress', 'completed'):
+            return Response({'detail': 'Invalid topic status.'}, status=status.HTTP_400_BAD_REQUEST)
+        revision_required = request.data.get('revision_required', False)
+        if not isinstance(revision_required, bool):
+            return Response({'detail': 'revision_required must be a boolean.'}, status=status.HTTP_400_BAD_REQUEST)
         topic = SyllabusTopic(
             id=str(uuid.uuid4()),
             title=request.data.get('title', ''),
-            is_completed=False,
+            is_completed=(topic_status == 'completed'),
             difficulty=difficulty,
+            status=topic_status,
+            revision_required=revision_required,
         )
         s.topics.append(topic)
         s.save()
-        return Response({'id': topic.id, 'subject': str(s.id), 'title': topic.title, 'is_completed': topic.is_completed, 'difficulty': topic.difficulty}, status=status.HTTP_201_CREATED)
+        return Response({
+            'id': topic.id,
+            'subject': str(s.id),
+            'title': topic.title,
+            'is_completed': topic.is_completed,
+            'difficulty': topic.difficulty,
+            'status': topic.status,
+            'revision_required': topic.revision_required,
+        }, status=status.HTTP_201_CREATED)
 
 
 class TopicDetail(APIView):
@@ -267,13 +304,37 @@ class TopicDetail(APIView):
         s, t = self._find(request, pk)
         if not t:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        t.is_completed = request.data.get('is_completed', t.is_completed)
+        if 'status' in request.data:
+            topic_status = request.data['status']
+            if topic_status not in ('not_started', 'in_progress', 'completed'):
+                return Response({'detail': 'Invalid topic status.'}, status=status.HTTP_400_BAD_REQUEST)
+            t.status = topic_status
+            t.is_completed = topic_status == 'completed'
+        elif 'is_completed' in request.data:
+            is_completed = request.data['is_completed']
+            if not isinstance(is_completed, bool):
+                return Response({'detail': 'is_completed must be a boolean.'}, status=status.HTTP_400_BAD_REQUEST)
+            t.is_completed = is_completed
+            t.status = 'completed' if is_completed else 'not_started'
         t.title = request.data.get('title', t.title)
         if 'difficulty' in request.data:
             d = request.data['difficulty']
             t.difficulty = d if d in ('easy', 'medium', 'hard') else 'medium'
+        if 'revision_required' in request.data:
+            revision_required = request.data['revision_required']
+            if not isinstance(revision_required, bool):
+                return Response({'detail': 'revision_required must be a boolean.'}, status=status.HTTP_400_BAD_REQUEST)
+            t.revision_required = revision_required
         s.save()
-        return Response({'id': t.id, 'subject': str(s.id), 'title': t.title, 'is_completed': t.is_completed, 'difficulty': t.difficulty or 'medium'})
+        return Response({
+            'id': t.id,
+            'subject': str(s.id),
+            'title': t.title,
+            'is_completed': t.is_completed,
+            'difficulty': t.difficulty or 'medium',
+            'status': _topic_status(t),
+            'revision_required': bool(getattr(t, 'revision_required', False)),
+        })
 
     def delete(self, request, pk):
         s, t = self._find(request, pk)
@@ -430,6 +491,7 @@ def _ensure_session_ids(plan):
 class StudyPlanListCreate(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @handle_database_errors
     def get(self, request):
         plans = list(StudyPlan.objects(user_id=uid(request)).order_by('-created_at'))
         for p in plans:
@@ -438,6 +500,7 @@ class StudyPlanListCreate(APIView):
                 p.save()
         return Response([StudyPlanSerializer(p).data for p in plans])
 
+    @handle_database_errors
     def post(self, request):
         title = request.data.get('title', 'My Study Plan')
         start_date = request.data.get('start_date', '')
@@ -447,6 +510,28 @@ class StudyPlanListCreate(APIView):
 
         if not start_date or not end_date:
             return Response({'detail': 'start_date and end_date required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(sessions, list) or any(not isinstance(s, dict) for s in sessions):
+            return Response({'detail': 'sessions must be a list of session objects.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        session_ids = [s.get('session_id') for s in sessions]
+        if any(not isinstance(session_id, str) or not session_id for session_id in session_ids) or len(session_ids) != len(set(session_ids)):
+            return Response(
+                {'detail': 'Every session must have a unique session_id.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # A retried save of the same generated preview reuses its session IDs.
+        # Return the saved plan instead of inserting a duplicate record.
+        for existing in StudyPlan.objects(
+            user_id=uid(request),
+            title=title,
+            start_date=start_date,
+            end_date=end_date,
+            daily_hours=daily_hours,
+        ):
+            existing_ids = [s.get('session_id') for s in (existing.sessions or [])]
+            if existing_ids == session_ids:
+                return Response(StudyPlanSerializer(existing).data, status=status.HTTP_200_OK)
 
         plan = StudyPlan(
             user_id=uid(request),
@@ -466,9 +551,10 @@ class StudyPlanDetail(APIView):
     def _get(self, request, pk):
         try:
             return StudyPlan.objects.get(id=pk, user_id=uid(request))
-        except (DoesNotExist, MongoValidationError, Exception):
+        except (DoesNotExist, MongoValidationError):
             return None
 
+    @handle_database_errors
     def get(self, request, pk):
         p = self._get(request, pk)
         if not p:
@@ -478,6 +564,7 @@ class StudyPlanDetail(APIView):
             p.save()
         return Response(StudyPlanSerializer(p).data)
 
+    @handle_database_errors
     def patch(self, request, pk):
         """Toggle completion of a single session by its session_id."""
         p = self._get(request, pk)
@@ -487,9 +574,9 @@ class StudyPlanDetail(APIView):
         session_id = request.data.get('session_id')
         is_completed = request.data.get('is_completed')
 
-        if not session_id or is_completed is None:
+        if not session_id or not isinstance(is_completed, bool):
             return Response(
-                {'detail': 'session_id and is_completed are required.'},
+                {'detail': 'session_id and a boolean is_completed value are required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -497,11 +584,13 @@ class StudyPlanDetail(APIView):
         # mutation is not tracked by DictField and would be silently dropped).
         new_sessions = []
         updated = False
+        updated_session = None
         for s in p.sessions:
             entry = dict(s)  # shallow copy so we don't mutate the original
-            if entry.get('session_id') == session_id:
+            if not updated and entry.get('session_id') == session_id:
                 entry['is_completed'] = bool(is_completed)
                 updated = True
+                updated_session = entry
             new_sessions.append(entry)
 
         if not updated:
@@ -510,10 +599,32 @@ class StudyPlanDetail(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        # Keep the topic's persisted completion flag in sync with its session.
+        # Scope the lookup by the authenticated owner to prevent cross-user writes.
+        subject_id = updated_session.get('subject_id')
+        topic_id = updated_session.get('topic_id')
+        subject = Subject.objects(user_id=uid(request), id=subject_id).first() if subject_id else None
+        if not subject:
+            return Response(
+                {'detail': 'The subject associated with this session was not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        topic = next((t for t in (subject.topics or []) if t.id == topic_id), None)
+        if not topic:
+            return Response(
+                {'detail': 'The topic associated with this session was not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        topic.is_completed = is_completed
+        topic.status = 'completed' if is_completed else 'not_started'
+        subject.save()
+
         p.sessions = new_sessions  # reassignment marks the field dirty
         p.save()
         return Response(StudyPlanSerializer(p).data)
 
+    @handle_database_errors
     def delete(self, request, pk):
         p = self._get(request, pk)
         if not p:
@@ -546,7 +657,8 @@ def _build_session_pool(user_id, excluded_topic_ids=None, filter_exam_ids=None, 
     if filter_subject_ids:
         subjects = [s for s in subjects if str(s.id) in filter_subject_ids]
 
-    exam_priority = {}
+    today = date.today()
+    deadline_days_by_subject = {}
     for exam in exams:
         if not exam.subject_id:
             continue
@@ -554,50 +666,95 @@ def _build_session_pool(user_id, excluded_topic_ids=None, filter_exam_ids=None, 
             exam_date = datetime.strptime(exam.exam_date, '%Y-%m-%d').date()
         except (ValueError, TypeError):
             continue
-        current = exam_priority.get(exam.subject_id)
-        if current is None or exam_date < current:
-            exam_priority[exam.subject_id] = exam_date
+        if exam_date < today:
+            continue
+        days_remaining = (exam_date - today).days
+        sid = exam.subject_id
+        deadline_days_by_subject[sid] = min(days_remaining, deadline_days_by_subject.get(sid, days_remaining))
 
-    assignment_priority = {}
     for assignment in assignments:
         if assignment.is_completed or not assignment.subject_id:
             continue
-        due_date = None
-        if assignment.due_date:
-            try:
-                due_date = datetime.strptime(assignment.due_date, '%Y-%m-%d').date()
-            except (ValueError, TypeError):
-                pass
-        priority_rank = {'high': 0, 'medium': 1, 'low': 2}.get(assignment.priority, 1)
-        key = (0 if due_date else 1, due_date or datetime.max.date(), priority_rank)
+        try:
+            due_date = datetime.strptime(assignment.due_date, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            continue
+        # A pending overdue assignment is urgent, so it is treated as due today.
+        days_remaining = max(0, (due_date - today).days)
         sid = assignment.subject_id
-        if sid not in assignment_priority or key < assignment_priority[sid]:
-            assignment_priority[sid] = key
+        deadline_days_by_subject[sid] = min(
+            days_remaining,
+            deadline_days_by_subject.get(sid, days_remaining),
+        )
 
     DIFFICULTY_RANK = {'hard': 0, 'medium': 1, 'easy': 2}
+    DIFFICULTY_SCORE = {'easy': 1 / 3, 'medium': 2 / 3, 'hard': 1.0}
     pool = []
     for subject in subjects:
         for topic in subject.topics or []:
-            if topic.is_completed or topic.id in excluded:
+            topic_status = _topic_status(topic)
+            if topic_status == 'completed' or topic.id in excluded:
                 continue
             sid = str(subject.id)
+            difficulty = topic.difficulty if topic.difficulty in DIFFICULTY_RANK else 'medium'
+            days_until_deadline = deadline_days_by_subject.get(sid)
+            revision_required = getattr(topic, 'revision_required', False) is True
             pool.append({
                 'subject': subject.name,
                 'subject_id': sid,
                 'topic': topic.title,
                 'topic_id': topic.id,
-                '_exam_key': exam_priority.get(sid, datetime.max.date()),
-                '_assignment_key': assignment_priority.get(sid, (2, datetime.max.date(), 3)),
-                '_difficulty_key': DIFFICULTY_RANK.get(topic.difficulty or 'medium', 1),
+                'status': topic_status,
+                'revision_required': revision_required,
+                'deadline_days': days_until_deadline,
+                '_difficulty_key': DIFFICULTY_RANK[difficulty],
+                '_priority_score': _priority_score(
+                    days_until_deadline,
+                    DIFFICULTY_SCORE[difficulty],
+                    topic_status,
+                    revision_required,
+                ),
             })
 
-    pool.sort(key=lambda item: (
-        item['_exam_key'],
-        item['_assignment_key'],
-        item['_difficulty_key'],
-        item['topic'].casefold()
-    ))
+    pool.sort(key=_topic_priority_key)
     return pool
+
+
+def _topic_priority_key(item):
+    """Sort by the documented score, then use stable names to break ties."""
+    return (
+        -item.get('_priority_score', 0.0),
+        item.get('topic', '').casefold(),
+        item.get('subject', '').casefold(),
+        item.get('topic_id') or '',
+    )
+
+
+def _topic_status(topic):
+    if getattr(topic, 'is_completed', False):
+        return 'completed'
+    topic_status = getattr(topic, 'status', 'not_started')
+    if topic_status in ('not_started', 'in_progress', 'completed'):
+        return topic_status
+    return 'not_started'
+
+
+def _priority_score(deadline_days, difficulty_score, topic_status, revision_required):
+    """P = .40U + .25D + .25S + .10R, matching the PBL report's Section 3.9."""
+    try:
+        days_remaining = max(0, int(deadline_days)) if deadline_days is not None else None
+    except (TypeError, ValueError, OverflowError):
+        days_remaining = None
+    urgency = 1 / (1 + days_remaining) if days_remaining is not None else 0.0
+    try:
+        difficulty = float(difficulty_score)
+    except (TypeError, ValueError, OverflowError):
+        difficulty = 2 / 3
+    if not 0 <= difficulty <= 1:
+        difficulty = 2 / 3
+    status_score = {'not_started': 1.0, 'in_progress': 0.5, 'completed': 0.0}.get(topic_status, 1.0)
+    revision_score = 1.0 if revision_required is True else 0.0
+    return 0.40 * urgency + 0.25 * difficulty + 0.25 * status_score + 0.10 * revision_score
 
 
 _TOPIC_DURATION = {'easy': 20, 'medium': 30, 'hard': 45}
@@ -610,22 +767,39 @@ def _topic_duration(item):
 
 
 def _schedule_sessions(topic_pool, start, end, daily_hours):
-    """Distribute topic_pool across [start, end] respecting daily_hours. Returns session list."""
+    """Distribute unique topics across [start, end] within the daily time budget."""
+    if not isinstance(daily_hours, int) or isinstance(daily_hours, bool) or daily_hours <= 0 or end < start:
+        return []
+
     sessions = []
-    topic_index = 0
     daily_minutes = daily_hours * 60
     total_days = (end - start).days + 1
+    remaining = []
+    seen_topics = set()
+    for index, item in enumerate(topic_pool):
+        topic_key = (item.get('subject_id'), item.get('topic_id'))
+        if not item.get('topic_id'):
+            topic_key = (item.get('subject_id'), 'missing-topic-id', index)
+        if topic_key in seen_topics:
+            continue
+        seen_topics.add(topic_key)
+        remaining.append(item)
 
     for day_offset in range(total_days):
-        if topic_index >= len(topic_pool):
+        if not remaining:
             break
         current_date = (start + timedelta(days=day_offset)).isoformat()
         minutes_used = 0
-        while topic_index < len(topic_pool):
-            item = topic_pool[topic_index]
-            duration = _topic_duration(item)
-            if minutes_used + duration > daily_minutes:
+        while remaining:
+            fitting_index = next(
+                (index for index, item in enumerate(remaining)
+                 if minutes_used + _topic_duration(item) <= daily_minutes),
+                None,
+            )
+            if fitting_index is None:
                 break
+            item = remaining.pop(fitting_index)
+            duration = _topic_duration(item)
             sessions.append({
                 'session_id': str(uuid.uuid4()),
                 'date': current_date,
@@ -635,10 +809,10 @@ def _schedule_sessions(topic_pool, start, end, daily_hours):
                 'topic_id': item['topic_id'],
                 'duration': f'{duration} min',
                 'duration_minutes': duration,
+                'priority_score': round(item.get('_priority_score', 0.0), 3),
                 'is_completed': False,
             })
             minutes_used += duration
-            topic_index += 1
     return sessions
 
 
@@ -649,7 +823,7 @@ class RescheduleStudyPlan(APIView):
     def _get_plan(self, request, pk):
         try:
             return StudyPlan.objects.get(id=pk, user_id=uid(request))
-        except (DoesNotExist, MongoValidationError, Exception):
+        except (DoesNotExist, MongoValidationError):
             return None
 
     def _parse_and_validate(self, request):
@@ -672,6 +846,7 @@ class RescheduleStudyPlan(APIView):
             return None, None, None, {'detail': 'end_date must be on or after start_date.'}
         return start, end, daily_hours, None
 
+    @handle_database_errors
     def post(self, request, pk):
         """Preview a rescheduled plan without saving.
         Mirrors PUT exactly: keeps completed sessions, replaces all pending ones.
@@ -708,6 +883,7 @@ class RescheduleStudyPlan(APIView):
             )
         })
 
+    @handle_database_errors
     def put(self, request, pk):
         """Commit the reschedule: keep completed sessions, replace pending with new schedule."""
         plan = self._get_plan(request, pk)
@@ -738,6 +914,7 @@ class RescheduleStudyPlan(APIView):
 class StudyInsights(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @handle_database_errors
     def get(self, request):
         user_id = uid(request)
         today = date.today()
@@ -845,6 +1022,7 @@ class GenerateStudyPlan(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
+    @handle_database_errors
     def post(self, request):
         start_date = request.data.get('start_date')
         end_date = request.data.get('end_date')

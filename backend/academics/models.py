@@ -7,6 +7,8 @@ class SyllabusTopic(EmbeddedDocument):
     title = StringField(required=True, max_length=200)
     is_completed = BooleanField(default=False)
     difficulty = StringField(default='medium', choices=('easy', 'medium', 'hard'))
+    status = StringField(default='not_started', choices=('not_started', 'in_progress', 'completed'))
+    revision_required = BooleanField(default=False)
 
 
 class Subject(Document):
