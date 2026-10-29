@@ -3,6 +3,8 @@ from .views import (
     SubjectListCreate,
     SubjectDetail,
     SubjectFileUpload,
+    SyllabusExtract,
+    SyllabusTopicImport,
     TopicListCreate,
     TopicDetail,
     AssignmentListCreate,
@@ -21,6 +23,8 @@ urlpatterns = [
     path('subjects/<str:pk>/', SubjectDetail.as_view(), name='subject-detail'),
     path('subjects/<str:pk>/files/', SubjectFileUpload.as_view(), name='subject-files'),
     path('subjects/<str:pk>/files/<str:filename>/', SubjectFileUpload.as_view(), name='subject-file-delete'),
+    path('subjects/<str:pk>/files/<str:filename>/extract/', SyllabusExtract.as_view(), name='subject-file-extract'),
+    path('subjects/<str:pk>/topics/import/', SyllabusTopicImport.as_view(), name='subject-topics-import'),
 
     path('topics/', TopicListCreate.as_view(), name='topics'),
     path('topics/<str:pk>/', TopicDetail.as_view(), name='topic-detail'),

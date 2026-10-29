@@ -2157,6 +2157,7 @@ section { padding: 100px 0; }
   background: var(--bg-2);
   box-shadow: var(--shadow-lg), var(--glow-primary);
   animation: fadeUp 0.25s ease;
+  overflow: hidden;
 }
 
 .modal-header {
@@ -2394,6 +2395,63 @@ section { padding: 100px 0; }
 }
 
 /* --- Study Insights --- */
+.insights-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.insight-summary-card {
+  padding: 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.02);
+  text-align: center;
+}
+
+.insight-summary-val {
+  font-size: 1.4rem;
+  font-weight: 800;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.insight-summary-lbl {
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+@media (max-width: 1100px) {
+  .insights-summary-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+@media (max-width: 600px) {
+  .insights-summary-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.insights-exams-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.insight-exam-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.02);
+}
+
+.insight-exam-info { flex: 1; min-width: 0; }
+
 .insights-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -2465,6 +2523,21 @@ section { padding: 100px 0; }
 
 @media (max-width: 600px) {
   .insights-grid { grid-template-columns: 1fr; }
+}
+
+/* --- Syllabus Review Modal --- */
+.syllabus-review-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.syllabus-review-item:last-child { border-bottom: none; }
+
+.review-duplicate {
+  opacity: 0.65;
 }
 
 /* form-input without icon wrapper (select, textarea) */

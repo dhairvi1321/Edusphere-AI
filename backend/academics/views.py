@@ -9,6 +9,7 @@ from django.conf import settings
 from .models import Subject, SyllabusTopic, Assignment, Exam, StudyPlan
 from .serializers import SubjectSerializer, SyllabusTopicSerializer, AssignmentSerializer, ExamSerializer, StudyPlanSerializer
 from datetime import datetime, timedelta, date
+from . import syllabus_processor
 
 
 def uid(request):
@@ -95,6 +96,10 @@ class SubjectFileUpload(APIView):
         if not file:
             return Response({'detail': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        ok, err = syllabus_processor.validate_upload(file)
+        if not ok:
+            return Response({'detail': err}, status=status.HTTP_400_BAD_REQUEST)
+
         upload_dir = os.path.join(settings.BASE_DIR, 'uploads', 'syllabus')
         os.makedirs(upload_dir, exist_ok=True)
         filename = f"{uuid.uuid4()}_{file.name}"
@@ -103,7 +108,7 @@ class SubjectFileUpload(APIView):
             for chunk in file.chunks():
                 dest.write(chunk)
 
-        file_info = {'name': file.name, 'filename': filename}
+        file_info = {'name': file.name, 'filename': filename, 'uploaded_at': datetime.utcnow().isoformat()}
         s.syllabus_files.append(file_info)
         s.save()
         d = SubjectSerializer(s).data
@@ -120,6 +125,105 @@ class SubjectFileUpload(APIView):
         d = SubjectSerializer(s).data
         d['id'] = str(s.id)
         return Response(d)
+
+
+class SyllabusExtract(APIView):
+    """POST /subjects/<pk>/files/<filename>/extract/
+    Extract and parse topics from an already-uploaded syllabus file.
+    Returns structured topics for the student to review before importing.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk, filename):
+        try:
+            s = Subject.objects.get(id=pk, user_id=str(request.user.id))
+        except (DoesNotExist, Exception):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        # Verify the file belongs to this subject
+        file_info = next((f for f in s.syllabus_files if f.get('filename') == filename), None)
+        if not file_info:
+            return Response({'detail': 'File not found for this subject.'}, status=status.HTTP_404_NOT_FOUND)
+
+        filepath = os.path.join(settings.BASE_DIR, 'uploads', 'syllabus', filename)
+        if not os.path.exists(filepath):
+            return Response({'detail': 'File missing from storage.'}, status=status.HTTP_404_NOT_FOUND)
+
+        ext = os.path.splitext(filename)[1]
+        # Strip the UUID prefix to get the real extension
+        original_name = file_info.get('name', filename)
+        ext = os.path.splitext(original_name)[1]
+
+        text, warning = syllabus_processor.extract_text(filepath, ext)
+
+        if warning and not text.strip():
+            return Response({'detail': warning, 'warning': warning, 'topics': []}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        topics = syllabus_processor.parse_topics(text, subject_name=s.name)
+
+        # Detect potential duplicates against existing topics
+        existing_titles = {t.title.strip().lower() for t in (s.topics or [])}
+        for t in topics:
+            t['is_duplicate'] = t['title'].strip().lower() in existing_titles
+
+        return Response({
+            'subject_id': str(s.id),
+            'subject_name': s.name,
+            'filename': file_info.get('name'),
+            'topics': topics,
+            'total_found': len(topics),
+            'existing_topic_count': len(s.topics or []),
+            'warning': warning,
+        })
+
+
+class SyllabusTopicImport(APIView):
+    """POST /subjects/<pk>/topics/import/
+    Bulk-import reviewed topics into the subject.
+    Accepts a list of {title, difficulty, unit} dicts.
+    Skips topics whose titles already exist unless skip_duplicates=false.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            s = Subject.objects.get(id=pk, user_id=str(request.user.id))
+        except (DoesNotExist, Exception):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        incoming = request.data.get('topics', [])
+        skip_duplicates = request.data.get('skip_duplicates', True)
+
+        if not isinstance(incoming, list) or not incoming:
+            return Response({'detail': 'topics must be a non-empty list.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        existing_titles = {t.title.strip().lower() for t in (s.topics or [])}
+        added, skipped = 0, 0
+
+        for item in incoming:
+            title = str(item.get('title', '')).strip()
+            if not title:
+                continue
+            if skip_duplicates and title.lower() in existing_titles:
+                skipped += 1
+                continue
+            difficulty = item.get('difficulty', 'medium')
+            if difficulty not in ('easy', 'medium', 'hard'):
+                difficulty = 'medium'
+            topic = SyllabusTopic(
+                id=str(uuid.uuid4()),
+                title=title,
+                is_completed=False,
+                difficulty=difficulty,
+            )
+            s.topics.append(topic)
+            existing_titles.add(title.lower())
+            added += 1
+
+        s.save()
+        d = SubjectSerializer(s).data
+        d['id'] = str(s.id)
+        return Response({'added': added, 'skipped': skipped, 'subject': d}, status=status.HTTP_201_CREATED)
 
 
 # ── Topics (embedded in Subject) ──────────────────────────────────────────────
@@ -419,15 +523,28 @@ class StudyPlanDetail(APIView):
 
 
 
-def _build_session_pool(user_id, excluded_topic_ids=None):
+def _build_session_pool(user_id, excluded_topic_ids=None, filter_exam_ids=None, filter_subject_ids=None):
     """Return a priority-sorted list of schedulable topic dicts for user_id.
     Topics whose id is in excluded_topic_ids are skipped.
     Completed syllabus topics are always skipped.
+    If filter_exam_ids is set, only subjects linked to those exams are included.
+    If filter_subject_ids is set, only those subjects are included.
     """
     excluded = excluded_topic_ids or set()
     subjects = list(Subject.objects(user_id=user_id))
     exams = list(Exam.objects(user_id=user_id))
     assignments = list(Assignment.objects(user_id=user_id))
+
+    # Resolve subject IDs from selected exams and merge with any explicit subject filter
+    if filter_exam_ids:
+        exam_subject_ids = {e.subject_id for e in exams if str(e.id) in filter_exam_ids and e.subject_id}
+        merged = set(filter_subject_ids or []) | exam_subject_ids
+        # Only apply the merged filter if it is non-empty; otherwise keep all subjects
+        if merged:
+            filter_subject_ids = list(merged)
+
+    if filter_subject_ids:
+        subjects = [s for s in subjects if str(s.id) in filter_subject_ids]
 
     exam_priority = {}
     for exam in exams:
@@ -483,11 +600,19 @@ def _build_session_pool(user_id, excluded_topic_ids=None):
     return pool
 
 
+_TOPIC_DURATION = {'easy': 20, 'medium': 30, 'hard': 45}
+
+
+def _topic_duration(item):
+    """Return session duration in minutes based on difficulty rank (0=hard,1=medium,2=easy)."""
+    rank = item.get('_difficulty_key', 1)
+    return {0: 45, 1: 30, 2: 20}.get(rank, 30)
+
+
 def _schedule_sessions(topic_pool, start, end, daily_hours):
     """Distribute topic_pool across [start, end] respecting daily_hours. Returns session list."""
     sessions = []
     topic_index = 0
-    session_duration = 45
     daily_minutes = daily_hours * 60
     total_days = (end - start).days + 1
 
@@ -497,9 +622,10 @@ def _schedule_sessions(topic_pool, start, end, daily_hours):
         current_date = (start + timedelta(days=day_offset)).isoformat()
         minutes_used = 0
         while topic_index < len(topic_pool):
-            if minutes_used + session_duration > daily_minutes:
-                break
             item = topic_pool[topic_index]
+            duration = _topic_duration(item)
+            if minutes_used + duration > daily_minutes:
+                break
             sessions.append({
                 'session_id': str(uuid.uuid4()),
                 'date': current_date,
@@ -507,11 +633,11 @@ def _schedule_sessions(topic_pool, start, end, daily_hours):
                 'subject_id': item['subject_id'],
                 'topic': item['topic'],
                 'topic_id': item['topic_id'],
-                'duration': f'{session_duration} min',
-                'duration_minutes': session_duration,
+                'duration': f'{duration} min',
+                'duration_minutes': duration,
                 'is_completed': False,
             })
-            minutes_used += session_duration
+            minutes_used += duration
             topic_index += 1
     return sessions
 
@@ -622,22 +748,35 @@ class StudyInsights(APIView):
         exams = list(Exam.objects(user_id=user_id))
         plans = list(StudyPlan.objects(user_id=user_id))
 
+        # Build subject id -> name map for exam resolution
+        subject_map = {str(s.id): s.name for s in subjects}
+
         # Overall session completion
         all_sessions = [s for p in plans for s in (p.sessions or [])]
         total_sessions = len(all_sessions)
         completed_sessions = sum(1 for s in all_sessions if s.get('is_completed'))
         pending_sessions = total_sessions - completed_sessions
-        completion_pct = round((completed_sessions / total_sessions) * 100) if total_sessions else 0
+        session_completion_pct = round((completed_sessions / total_sessions) * 100) if total_sessions else 0
 
-        # Upcoming exams (next 7 days)
+        # Topic-level totals across all subjects
+        total_topics = sum(len(s.topics or []) for s in subjects)
+        completed_topics = sum(sum(1 for t in (s.topics or []) if t.is_completed) for s in subjects)
+        topic_completion_pct = round((completed_topics / total_topics) * 100) if total_topics else 0
+
+        # All upcoming exams (today or future), sorted by date
         upcoming_exams = []
         for e in exams:
             try:
                 days = (datetime.strptime(e.exam_date, '%Y-%m-%d').date() - today).days
             except (ValueError, TypeError):
                 continue
-            if 0 <= days <= 7:
-                upcoming_exams.append({'title': e.title, 'exam_date': e.exam_date, 'days_until': days})
+            if days >= 0:
+                upcoming_exams.append({
+                    'title': e.title,
+                    'subject': subject_map.get(e.subject_id or '', '') or '',
+                    'exam_date': e.exam_date,
+                    'days_until': days,
+                })
         upcoming_exams.sort(key=lambda x: x['days_until'])
 
         # Urgent assignments (pending, due within 3 days or high priority)
@@ -660,26 +799,43 @@ class StudyInsights(APIView):
                 })
         urgent_assignments.sort(key=lambda x: (x['days_until'] if x['days_until'] is not None else 999, x['priority'] != 'high'))
 
-        # Remaining topics by subject
-        topics_by_subject = []
+        # Subject-wise progress (all subjects, including those with 0 topics)
+        subject_progress = []
         for s in subjects:
             topics = s.topics or []
-            remaining = [t.title for t in topics if not t.is_completed]
-            if remaining:
-                topics_by_subject.append({'subject': s.name, 'remaining': len(remaining), 'total': len(topics)})
+            total = len(topics)
+            done = sum(1 for t in topics if t.is_completed)
+            pct = round((done / total) * 100) if total else 0
+            subject_progress.append({
+                'subject': s.name,
+                'total_topics': total,
+                'completed_topics': done,
+                'completion_pct': pct,
+            })
 
         # Daily study progress (today's sessions)
         today_sessions = [s for s in all_sessions if s.get('date') == today_str]
         today_done = sum(1 for s in today_sessions if s.get('is_completed'))
 
         return Response({
-            'completion_pct': completion_pct,
+            'total_subjects': len(subjects),
+            'total_topics': total_topics,
+            'completed_topics': completed_topics,
+            'topic_completion_pct': topic_completion_pct,
+            'total_sessions': total_sessions,
             'completed_sessions': completed_sessions,
             'pending_sessions': pending_sessions,
-            'total_sessions': total_sessions,
-            'upcoming_exams': upcoming_exams[:3],
+            'session_completion_pct': session_completion_pct,
+            # kept for backward compat
+            'completion_pct': session_completion_pct,
+            'upcoming_exams': upcoming_exams,
             'urgent_assignments': urgent_assignments[:3],
-            'topics_by_subject': topics_by_subject,
+            'subject_progress': subject_progress,
+            # kept for backward compat
+            'topics_by_subject': [
+                {'subject': sp['subject'], 'remaining': sp['total_topics'] - sp['completed_topics'], 'total': sp['total_topics']}
+                for sp in subject_progress if sp['total_topics'] > 0
+            ],
             'today_total': len(today_sessions),
             'today_done': today_done,
         })
@@ -687,6 +843,7 @@ class StudyInsights(APIView):
 
 class GenerateStudyPlan(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
         start_date = request.data.get('start_date')
@@ -728,18 +885,100 @@ class GenerateStudyPlan(APIView):
             )
 
         user_id = uid(request)
+
+        # Optional filters: specific exams and/or subjects
+        exam_ids = request.data.getlist('exam_ids') if hasattr(request.data, 'getlist') else request.data.get('exam_ids', [])
+        subject_ids = request.data.getlist('subject_ids') if hasattr(request.data, 'getlist') else request.data.get('subject_ids', [])
+        if isinstance(exam_ids, str):
+            exam_ids = [exam_ids] if exam_ids else []
+        if isinstance(subject_ids, str):
+            subject_ids = [subject_ids] if subject_ids else []
+
+        topic_pool = _build_session_pool(
+            user_id,
+            filter_exam_ids=exam_ids or None,
+            filter_subject_ids=subject_ids or None,
+        )
+
+        # Extra topics from uploaded files (PDF/DOCX/PPTX/TXT)
+        extra_topics = []
+        file_warnings = []
+        for uploaded_file in request.FILES.getlist('files'):
+            ok, err = syllabus_processor.validate_upload(uploaded_file)
+            if not ok:
+                file_warnings.append(f"{uploaded_file.name}: {err}")
+                continue
+            tmp_path = os.path.join(settings.MEDIA_ROOT, 'syllabus', f"{uuid.uuid4()}_{uploaded_file.name}")
+            os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+            try:
+                with open(tmp_path, 'wb+') as f:
+                    for chunk in uploaded_file.chunks():
+                        f.write(chunk)
+                ext = os.path.splitext(uploaded_file.name)[1]
+                text, warning = syllabus_processor.extract_text(tmp_path, ext)
+                if warning:
+                    file_warnings.append(f"{uploaded_file.name}: {warning}")
+                if text.strip():
+                    parsed = syllabus_processor.parse_topics(text, subject_name=uploaded_file.name)
+                    if not parsed:
+                        file_warnings.append(f"{uploaded_file.name}: No topics could be extracted from this file.")
+                    label = uploaded_file.name
+                    for t in parsed:
+                        extra_topics.append({
+                            'subject': label,
+                            'subject_id': '',
+                            'topic': t['title'],
+                            'topic_id': str(uuid.uuid4()),
+                            '_exam_key': datetime.max.date(),
+                            '_assignment_key': (2, datetime.max.date(), 3),
+                            '_difficulty_key': 1,
+                        })
+                else:
+                    file_warnings.append(f"{uploaded_file.name}: File produced no readable text.")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+        combined_pool = topic_pool + extra_topics
         total_days = (end - start).days + 1
-        topic_pool = _build_session_pool(user_id)
-        sessions = _schedule_sessions(topic_pool, start, end, daily_hours)
+        sessions = _schedule_sessions(combined_pool, start, end, daily_hours)
+
+        if not sessions:
+            if not combined_pool:
+                # Diagnose why the pool is empty
+                all_subjects = list(Subject.objects(user_id=user_id))
+                if subject_ids:
+                    matched = [s for s in all_subjects if str(s.id) in subject_ids]
+                    if not matched:
+                        detail = 'None of the selected subjects were found for your account.'
+                    elif all(not (s.topics or []) for s in matched):
+                        names = ', '.join(s.name for s in matched)
+                        detail = f'The selected subject(s) ({names}) have no topics. Add topics first, or upload a syllabus file.'
+                    else:
+                        detail = 'All topics in the selected subjects are already marked as completed.'
+                elif not all_subjects:
+                    detail = 'You have no subjects yet. Add a subject and topics first.'
+                elif all(not (s.topics or []) for s in all_subjects):
+                    detail = 'None of your subjects have topics. Add topics to a subject first.'
+                else:
+                    detail = 'All your topics are already marked as completed.'
+                if file_warnings:
+                    detail += ' File issue(s): ' + '; '.join(file_warnings)
+                return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                # Pool has topics but none fit in the date range
+                detail = (
+                    f'The date range ({start_date} to {end_date}) with {daily_hours}h/day '
+                    f'is too short to fit any of the {len(combined_pool)} available topic(s). '
+                    'Extend the date range or increase daily hours.'
+                )
+                return Response({'detail': detail}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             'sessions': sessions,
             'total_days': total_days,
             'scheduled_topics': len(sessions),
-            'unscheduled_topics': len(topic_pool) - len(sessions),
-            'message': (
-                'Study plan generated successfully.'
-                if sessions
-                else 'No incomplete syllabus topics found.'
-            )
+            'unscheduled_topics': len(combined_pool) - len(sessions),
+            'file_warnings': file_warnings,
+            'message': 'Study plan generated successfully.',
         })

@@ -226,6 +226,9 @@ function renderSubjects() {
             <div class="topic-check ${t.is_completed ? 'done' : ''}" onclick="toggleTopic('${t.id}', ${!t.is_completed})"></div>
             <span class="topic-name ${t.is_completed ? 'done' : ''}">${t.title}</span>
             <span class="difficulty-badge difficulty-${t.difficulty || 'medium'}">${t.difficulty || 'medium'}</span>
+            <button class="icon-btn" onclick="openEditTopic('${t.id}', '${t.title.replace(/'/g, "\\'").replace(/"/g, '&quot;')}', '${t.difficulty || 'medium'}')" title="Edit topic">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
             <button class="icon-btn danger" onclick="deleteTopic('${t.id}')" title="Delete topic">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             </button>
@@ -396,6 +399,25 @@ async function toggleTopic(id, completed) {
   await loadAll();
 }
 
+function openEditTopic(id, title, difficulty) {
+  document.getElementById('editTopicId').value = id;
+  document.getElementById('editTopicTitle').value = title;
+  document.getElementById('editTopicDifficulty').value = difficulty;
+  openModal('editTopicModal');
+}
+
+document.getElementById('editTopicForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const id = document.getElementById('editTopicId').value;
+  const body = {
+    title: document.getElementById('editTopicTitle').value.trim(),
+    difficulty: document.getElementById('editTopicDifficulty').value,
+  };
+  const res = await Auth.apiFetch(`/academics/topics/${id}/`, { method: 'PATCH', body: JSON.stringify(body) });
+  if (res) { closeModal('editTopicModal'); showToast('Topic updated!'); await loadAll(); }
+  else showToast('Something went wrong.', 'error');
+});
+
 async function deleteTopic(id) {
   const res = await fetch(`http://127.0.0.1:8000/api/academics/topics/${id}/`, {
     method: 'DELETE',
@@ -517,29 +539,141 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
   });
 });
 
-/* ===== SYLLABUS FILE UPLOAD ===== */
+/* ===== SYLLABUS FILE UPLOAD + EXTRACT ===== */
 let currentUploadSubjectId = null;
+let syllabusReviewState = null;  // { subjectId, filename, topics }
 
 function openUploadSyllabus(subjectId) {
   currentUploadSubjectId = subjectId;
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.pdf,.doc,.docx,.txt,.png,.jpg,.jpeg';
+  input.accept = '.pdf,.docx,.txt,.pptx';
   input.onchange = async () => {
     const file = input.files[0];
     if (!file) return;
     const formData = new FormData();
     formData.append('file', file);
+    showToast('Uploading file…');
     const res = await fetch(`http://127.0.0.1:8000/api/academics/subjects/${subjectId}/files/`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${Auth.getToken()}` },
       body: formData
     });
-    if (res.ok) { showToast('File uploaded!'); await loadAll(); }
-    else showToast('Upload failed.', 'error');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.detail || 'Upload failed.', 'error');
+      return;
+    }
+    const data = await res.json();
+    showToast('File uploaded! Extracting topics…');
+    await loadAll();
+    // Find the filename that was just added (last in the list)
+    const subject = subjects.find(s => s.id === subjectId);
+    const files = subject?.syllabus_files || [];
+    const uploaded = files[files.length - 1];
+    if (uploaded?.filename) {
+      await openSyllabusReview(subjectId, uploaded.filename, uploaded.name);
+    }
   };
   input.click();
 }
+
+async function openSyllabusReview(subjectId, filename, displayName) {
+  const res = await fetch(
+    `http://127.0.0.1:8000/api/academics/subjects/${subjectId}/files/${filename}/extract/`,
+    { method: 'POST', headers: { Authorization: `Bearer ${Auth.getToken()}` } }
+  );
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data) {
+    showToast(data?.detail || 'Could not extract topics from file.', 'error');
+    return;
+  }
+
+  syllabusReviewState = { subjectId, filename, topics: data.topics || [] };
+
+  document.getElementById('syllabusReviewMeta').textContent =
+    `${displayName || filename} · ${data.total_found} topic(s) found · ${data.existing_topic_count} already in subject`;
+
+  const warnEl = document.getElementById('syllabusReviewWarning');
+  if (data.warning) {
+    warnEl.textContent = '⚠ ' + data.warning;
+    warnEl.style.display = 'block';
+  } else {
+    warnEl.style.display = 'none';
+  }
+
+  renderSyllabusTopicsList(data.topics);
+  openModal('syllabusReviewModal');
+}
+
+function renderSyllabusTopicsList(topics) {
+  const el = document.getElementById('syllabusTopicsList');
+  if (!topics.length) {
+    el.innerHTML = `<div class="dash-empty">No topics could be extracted from this file.</div>`;
+    return;
+  }
+  el.innerHTML = topics.map((t, i) => `
+    <div class="syllabus-review-item ${t.is_duplicate ? 'review-duplicate' : ''}">
+      <input type="checkbox" class="syllabus-topic-check" data-index="${i}" ${t.is_duplicate ? '' : 'checked'}
+        style="cursor:pointer;flex-shrink:0" />
+      <div style="flex:1;min-width:0">
+        <input type="text" class="syllabus-topic-title form-input" data-index="${i}"
+          value="${t.title.replace(/"/g, '&quot;')}"
+          style="height:32px;padding:0 10px;font-size:0.82rem;width:100%" />
+        ${t.unit ? `<div style="color:var(--muted);font-size:0.68rem;margin-top:2px">${t.unit}</div>` : ''}
+      </div>
+      <select class="syllabus-topic-diff form-input form-select" data-index="${i}"
+        style="height:32px;padding:0 8px;font-size:0.75rem;width:80px;flex-shrink:0">
+        <option value="easy">Easy</option>
+        <option value="medium" selected>Medium</option>
+        <option value="hard">Hard</option>
+      </select>
+      ${t.is_duplicate ? '<span style="color:#fbbf24;font-size:0.65rem;white-space:nowrap">duplicate</span>' : ''}
+    </div>`).join('');
+}
+
+document.getElementById('syllabusSelectAll').addEventListener('click', () => {
+  const checks = document.querySelectorAll('.syllabus-topic-check');
+  const allChecked = [...checks].every(c => c.checked);
+  checks.forEach(c => c.checked = !allChecked);
+  document.getElementById('syllabusSelectAll').textContent = allChecked ? 'Select All' : 'Deselect All';
+});
+
+document.getElementById('syllabusImportBtn').addEventListener('click', async () => {
+  if (!syllabusReviewState) return;
+  const { subjectId } = syllabusReviewState;
+  const skipDupes = document.getElementById('syllabusSkipDupes').checked;
+
+  const checks = document.querySelectorAll('.syllabus-topic-check');
+  const titles = document.querySelectorAll('.syllabus-topic-title');
+  const diffs = document.querySelectorAll('.syllabus-topic-diff');
+
+  const selected = [];
+  checks.forEach((c, i) => {
+    if (c.checked) {
+      selected.push({
+        title: titles[i].value.trim(),
+        difficulty: diffs[i].value,
+      });
+    }
+  });
+
+  if (!selected.length) { showToast('No topics selected.', 'error'); return; }
+
+  const res = await Auth.apiFetch(`/academics/subjects/${subjectId}/topics/import/`, {
+    method: 'POST',
+    body: JSON.stringify({ topics: selected, skip_duplicates: skipDupes })
+  });
+
+  if (res) {
+    closeModal('syllabusReviewModal');
+    showToast(`Imported ${res.added} topic(s)${res.skipped ? `, skipped ${res.skipped} duplicate(s)` : ''}.`);
+    syllabusReviewState = null;
+    await loadAll();
+  } else {
+    showToast('Import failed.', 'error');
+  }
+});
 
 async function deleteSyllabusFile(subjectId, filename) {
   if (!confirm('Remove this file?')) return;
@@ -616,6 +750,29 @@ document.getElementById('generatePlanBtn').addEventListener('click', () => {
   document.getElementById('planStartDate').value = '';
   document.getElementById('planEndDate').value = '';
   document.getElementById('planDailyHours').value = '2';
+  document.getElementById('planFiles').value = '';
+
+  // Render exam checkboxes
+  const examBox = document.getElementById('planExamCheckboxes');
+  const upcomingExams = exams.filter(e => daysUntil(e.exam_date) >= 0).sort((a, b) => new Date(a.exam_date) - new Date(b.exam_date));
+  examBox.innerHTML = upcomingExams.length
+    ? upcomingExams.map(e => `
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.82rem;color:var(--text)">
+          <input type="checkbox" class="plan-exam-cb" value="${e.id}" style="cursor:pointer" />
+          <span>${e.title} <span style="color:var(--muted);font-size:0.72rem">(${formatDate(e.exam_date)})</span></span>
+        </label>`).join('')
+    : '<span style="color:var(--muted);font-size:0.78rem">No upcoming exams</span>';
+
+  // Render subject checkboxes
+  const subBox = document.getElementById('planSubjectCheckboxes');
+  subBox.innerHTML = subjects.length
+    ? subjects.map(s => `
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.82rem;color:var(--text)">
+          <input type="checkbox" class="plan-subject-cb" value="${s.id}" style="cursor:pointer" />
+          <span>${s.name}</span>
+        </label>`).join('')
+    : '<span style="color:var(--muted);font-size:0.78rem">No subjects</span>';
+
   openModal('generatePlanModal');
 });
 
@@ -626,17 +783,67 @@ document.getElementById('generatePlanForm').addEventListener('submit', async e =
   const end_date = document.getElementById('planEndDate').value;
   const daily_hours = document.getElementById('planDailyHours').value;
 
-  const res = await Auth.apiFetch('/academics/study-plans/generate/', {
-    method: 'POST',
-    body: JSON.stringify({ start_date, end_date, daily_hours: parseInt(daily_hours) })
-  });
+  const selectedExams = [...document.querySelectorAll('.plan-exam-cb:checked')].map(c => c.value);
+  const selectedSubjects = [...document.querySelectorAll('.plan-subject-cb:checked')].map(c => c.value);
+  const files = document.getElementById('planFiles').files;
 
-  if (!res || !res.sessions) { showToast('Generation failed. Make sure you have subjects with topics.', 'error'); return; }
+  const hasFiles = files && files.length > 0;
+  let res, rawStatus;
+
+  // Always use FormData so files, exam_ids, and subject_ids are sent uniformly.
+  const fd = new FormData();
+  fd.append('start_date', start_date);
+  fd.append('end_date', end_date);
+  fd.append('daily_hours', daily_hours);
+  selectedExams.forEach(id => fd.append('exam_ids', id));
+  selectedSubjects.forEach(id => fd.append('subject_ids', id));
+  if (hasFiles) {
+    for (const f of files) fd.append('files', f);
+  }
+
+  let raw;
+  try {
+    raw = await fetch('http://127.0.0.1:8000/api/academics/study-plans/generate/', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${Auth.getToken()}` },
+      body: fd,
+    });
+  } catch (networkErr) {
+    showToast('Network error — could not reach the server.', 'error');
+    return;
+  }
+
+  rawStatus = raw.status;
+  let body;
+  try { body = await raw.json(); } catch (_) { body = null; }
+
+  if (!raw.ok) {
+    const detail = body?.detail || body?.message || `Server error (HTTP ${rawStatus}).`;
+    showToast(detail, 'error');
+    return;
+  }
+
+  res = body;
+
+  if (!res || !Array.isArray(res.sessions)) {
+    showToast('Unexpected response from server.', 'error');
+    return;
+  }
+
+  if (res.sessions.length === 0) {
+    showToast(res.message || 'No incomplete topics found for the selected subjects.', 'error');
+    return;
+  }
 
   generatedSessions = res.sessions;
   generatedPlanMeta = { title, start_date, end_date, daily_hours };
 
   closeModal('generatePlanModal');
+
+  // Warn about any file processing issues
+  if (res.file_warnings && res.file_warnings.length) {
+    showToast('⚠ ' + res.file_warnings[0], 'error');
+  }
 
   // Show generated plan preview
   const wrap = document.getElementById('generatedPlanWrap');
@@ -799,85 +1006,110 @@ async function renderInsights() {
 
   const todayPct = data.today_total ? Math.round((data.today_done / data.today_total) * 100) : null;
 
+  // Summary cards
+  const summaryCards = [
+    { label: 'Subjects', value: data.total_subjects, color: '#818cf8' },
+    { label: 'Total Topics', value: data.total_topics, color: '#a78bfa' },
+    { label: 'Completed Topics', value: data.completed_topics, color: '#34d399' },
+    { label: 'Topic Progress', value: `${data.topic_completion_pct}%`, color: '#22d3ee' },
+    { label: 'Total Sessions', value: data.total_sessions, color: '#818cf8' },
+    { label: 'Done Sessions', value: data.completed_sessions, color: '#34d399' },
+    { label: 'Pending Sessions', value: data.pending_sessions, color: '#fbbf24' },
+  ];
+
   el.innerHTML = `
-    <div class="insights-grid">
-      <!-- Overall completion -->
+    <!-- Summary cards -->
+    <div class="insights-summary-grid">
+      ${summaryCards.map(c => `
+        <div class="insight-summary-card">
+          <div class="insight-summary-val" style="color:${c.color}">${c.value}</div>
+          <div class="insight-summary-lbl">${c.label}</div>
+        </div>`).join('')}
+    </div>
+
+    <!-- Session + Today progress -->
+    <div class="insights-grid" style="margin-top:16px">
       <div class="insight-block">
-        <div class="insight-label">Overall Completion</div>
-        <div class="insight-big">${data.completion_pct}%</div>
+        <div class="insight-label">Session Completion</div>
+        <div class="insight-big">${data.session_completion_pct ?? data.completion_pct}%</div>
         <div class="progress-bar-wrap" style="margin-top:6px">
-          <div class="progress-bar" style="width:${data.completion_pct}%"></div>
+          <div class="progress-bar" style="width:${data.session_completion_pct ?? data.completion_pct}%"></div>
         </div>
         <div class="insight-sub">${data.completed_sessions} done · ${data.pending_sessions} pending</div>
       </div>
 
-      <!-- Daily progress -->
       <div class="insight-block">
         <div class="insight-label">Today's Sessions</div>
-        ${
-          data.today_total
-            ? `<div class="insight-big">${data.today_done}/${data.today_total}</div>
-               <div class="progress-bar-wrap" style="margin-top:6px">
-                 <div class="progress-bar" style="width:${todayPct}%"></div>
-               </div>
-               <div class="insight-sub">${todayPct}% complete today</div>`
-            : `<div class="insight-sub" style="margin-top:8px">No sessions scheduled today</div>`
-        }
+        ${data.today_total
+          ? `<div class="insight-big">${data.today_done}/${data.today_total}</div>
+             <div class="progress-bar-wrap" style="margin-top:6px">
+               <div class="progress-bar" style="width:${todayPct}%"></div>
+             </div>
+             <div class="insight-sub">${todayPct}% complete today</div>`
+          : `<div class="insight-sub" style="margin-top:8px">No sessions scheduled today</div>`}
       </div>
 
-      <!-- Upcoming exams -->
-      <div class="insight-block">
-        <div class="insight-label">Upcoming Exams <span style="color:var(--muted)">(7 days)</span></div>
-        ${
-          data.upcoming_exams.length
-            ? data.upcoming_exams.map(e =>
-                `<div class="insight-row">
-                  <span class="insight-row-name">${e.title}</span>
-                  <span class="exam-days-badge ${e.days_until <= 2 ? 'days-soon' : e.days_until <= 5 ? 'days-upcoming' : 'days-far'}">
-                    ${e.days_until === 0 ? 'Today' : `In ${e.days_until}d`}
-                  </span>
-                </div>`).join('')
-            : `<div class="insight-sub" style="margin-top:8px">No exams in the next 7 days 🎉</div>`
-        }
-      </div>
-
-      <!-- Urgent assignments -->
       <div class="insight-block">
         <div class="insight-label">Urgent Assignments</div>
-        ${
-          data.urgent_assignments.length
-            ? data.urgent_assignments.map(a =>
-                `<div class="insight-row">
-                  <span class="insight-row-name">${a.title}</span>
-                  ${priorityBadge(a.priority)}
-                </div>`).join('')
-            : `<div class="insight-sub" style="margin-top:8px">No urgent assignments 🎉</div>`
-        }
+        ${data.urgent_assignments.length
+          ? data.urgent_assignments.map(a =>
+              `<div class="insight-row">
+                <span class="insight-row-name">${a.title}</span>
+                ${priorityBadge(a.priority)}
+              </div>`).join('')
+          : `<div class="insight-sub" style="margin-top:8px">No urgent assignments 🎉</div>`}
+      </div>
+
+      <div class="insight-block">
+        <div class="insight-label">Topic Completion</div>
+        <div class="insight-big">${data.topic_completion_pct}%</div>
+        <div class="progress-bar-wrap" style="margin-top:6px">
+          <div class="progress-bar" style="width:${data.topic_completion_pct}%"></div>
+        </div>
+        <div class="insight-sub">${data.completed_topics} of ${data.total_topics} topics done</div>
       </div>
     </div>
 
-    <!-- Remaining topics by subject -->
-    ${
-      data.topics_by_subject.length
-        ? `<div style="margin-top:16px">
-            <div class="insight-label" style="margin-bottom:10px">Remaining Topics by Subject</div>
-            <div class="insights-topics-grid">
-              ${data.topics_by_subject.map(s => {
-                const pct = Math.round(((s.total - s.remaining) / s.total) * 100);
-                return `<div class="insight-topic-row">
-                  <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-                    <span style="color:var(--text-bright);font-size:0.8rem;font-weight:600">${s.subject}</span>
-                    <span style="color:var(--muted);font-size:0.72rem">${s.remaining} left</span>
-                  </div>
-                  <div class="progress-bar-wrap">
-                    <div class="progress-bar" style="width:${pct}%"></div>
-                  </div>
-                </div>`;
-              }).join('')}
-            </div>
-          </div>`
-        : ''
-    }`;
+    <!-- Subject-wise progress -->
+    ${data.subject_progress && data.subject_progress.length
+      ? `<div style="margin-top:20px">
+          <div class="insight-label" style="margin-bottom:10px">Subject-wise Progress</div>
+          <div class="insights-topics-grid">
+            ${data.subject_progress.map(s => `
+              <div class="insight-topic-row">
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span style="color:var(--text-bright);font-size:0.8rem;font-weight:600">${s.subject}</span>
+                  <span style="color:var(--muted);font-size:0.72rem">${s.completed_topics}/${s.total_topics}</span>
+                </div>
+                <div class="progress-bar-wrap">
+                  <div class="progress-bar" style="width:${s.completion_pct}%"></div>
+                </div>
+                <div style="color:var(--muted);font-size:0.68rem;margin-top:3px">${s.completion_pct}% complete</div>
+              </div>`).join('')}
+          </div>
+        </div>`
+      : ''}
+
+    <!-- Upcoming exams -->
+    ${data.upcoming_exams && data.upcoming_exams.length
+      ? `<div style="margin-top:20px">
+          <div class="insight-label" style="margin-bottom:10px">Upcoming Exams</div>
+          <div class="insights-exams-list">
+            ${data.upcoming_exams.map(e => `
+              <div class="insight-exam-row">
+                <div class="insight-exam-info">
+                  <span class="insight-row-name">${e.title}</span>
+                  ${e.subject ? `<span style="color:var(--muted);font-size:0.72rem"> · ${e.subject}</span>` : ''}
+                  <div style="color:var(--muted);font-size:0.7rem;margin-top:2px">📅 ${formatDate(e.exam_date)}</div>
+                </div>
+                <span class="exam-days-badge ${e.days_until === 0 ? 'days-soon' : e.days_until <= 3 ? 'days-soon' : e.days_until <= 7 ? 'days-upcoming' : 'days-far'}">
+                  ${e.days_until === 0 ? 'Today' : `In ${e.days_until}d`}
+                </span>
+              </div>`).join('')}
+          </div>
+        </div>`
+      : `<div style="margin-top:16px"><div class="insight-sub" style="text-align:center">No upcoming exams 🎉</div></div>`}
+  `;
 }
 
 /* ===== LOAD ===== */
