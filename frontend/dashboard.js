@@ -89,6 +89,10 @@ function showToast(msg, type = 'success') {
   setTimeout(() => t.classList.remove('show'), 3000);
 }
 
+window.addEventListener('edusphere:api-error', event => {
+  showToast(event.detail || 'Student data is temporarily unavailable. Please try again.', 'error');
+});
+
 /* ===== MODALS ===== */
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }

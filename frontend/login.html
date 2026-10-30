@@ -181,10 +181,15 @@
       submitBtn.disabled = true;
       submitBtn.textContent = 'Signing in…';
 
-      const result = await Auth.login(email, password, remember);
-
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Sign In';
+      let result;
+      try {
+        result = await Auth.login(email, password, remember);
+      } catch (error) {
+        result = { ok: false, error: error?.message || 'Sign-in failed. Please try again.' };
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign In';
+      }
 
       if (!result.ok) {
         errorEl.textContent = result.error;

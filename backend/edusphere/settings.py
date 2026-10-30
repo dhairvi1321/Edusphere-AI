@@ -1,12 +1,10 @@
 from pathlib import Path
-from datetime import timedelta
 from dotenv import load_dotenv
 import os
 import mongoengine
 
-load_dotenv()
-
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-this-in-production')
 
@@ -51,9 +49,20 @@ DATABASES = {
     }
 }
 
+MONGODB_URI = os.environ.get('MONGODB_URI')
+if not MONGODB_URI:
+    raise RuntimeError(f'MONGODB_URI is missing; configure it in {BASE_DIR / ".env"}')
+
+# Atlas SRV connections use TLS by default; tls=True makes that requirement
+# explicit. Certificate and hostname verification remain enabled by PyMongo.
 mongoengine.connect(
     db=os.environ.get('DB_NAME', 'edusphere_db'),
-    host=os.environ.get('MONGODB_URI', 'mongodb://localhost:27017'),
+    host=MONGODB_URI,
+    tls=True,
+    serverSelectionTimeoutMS=8000,
+    connectTimeoutMS=8000,
+    socketTimeoutMS=20000,
+    appName='EduSphereAI',
 )
 
 LANGUAGE_CODE = 'en-us'
@@ -81,6 +90,7 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'accounts.authentication.MongoJWTAuthentication',
     ),
+    'EXCEPTION_HANDLER': 'accounts.exceptions.mongo_exception_handler',
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),

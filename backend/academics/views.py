@@ -97,7 +97,7 @@ class SubjectDetail(APIView):
     def _get(self, request, pk):
         try:
             return Subject.objects.get(id=pk, user_id=uid(request))
-        except (DoesNotExist, MongoValidationError, Exception):
+        except (DoesNotExist, MongoValidationError):
             return None
 
     def get(self, request, pk):
@@ -137,7 +137,7 @@ class SubjectFileUpload(APIView):
     def post(self, request, pk):
         try:
             s = Subject.objects.get(id=pk, user_id=str(request.user.id))
-        except (DoesNotExist, Exception):
+        except (DoesNotExist, MongoValidationError):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         file = request.FILES.get('file')
@@ -166,7 +166,7 @@ class SubjectFileUpload(APIView):
     def delete(self, request, pk, filename):
         try:
             s = Subject.objects.get(id=pk, user_id=str(request.user.id))
-        except (DoesNotExist, Exception):
+        except (DoesNotExist, MongoValidationError):
             return Response(status=status.HTTP_404_NOT_FOUND)
         s.syllabus_files = [f for f in s.syllabus_files if f.get('filename') != filename]
         s.save()
@@ -185,7 +185,7 @@ class SyllabusExtract(APIView):
     def post(self, request, pk, filename):
         try:
             s = Subject.objects.get(id=pk, user_id=str(request.user.id))
-        except (DoesNotExist, Exception):
+        except (DoesNotExist, MongoValidationError):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         # Verify the file belongs to this subject
@@ -306,7 +306,7 @@ class SyllabusTopicImport(APIView):
     def post(self, request, pk):
         try:
             s = Subject.objects.get(id=pk, user_id=str(request.user.id))
-        except (DoesNotExist, Exception):
+        except (DoesNotExist, MongoValidationError):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         incoming = request.data.get('topics', [])
@@ -353,7 +353,7 @@ class TopicListCreate(APIView):
         subject_id = request.data.get('subject')
         try:
             s = Subject.objects.get(id=subject_id, user_id=uid(request))
-        except (DoesNotExist, MongoValidationError, Exception):
+        except (DoesNotExist, MongoValidationError):
             return Response({'detail': 'Subject not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         difficulty = request.data.get('difficulty', 'medium')
@@ -474,7 +474,7 @@ class AssignmentDetail(APIView):
     def _get(self, request, pk):
         try:
             return Assignment.objects.get(id=pk, user_id=uid(request))
-        except (DoesNotExist, MongoValidationError, Exception):
+        except (DoesNotExist, MongoValidationError):
             return None
 
     def put(self, request, pk):
@@ -541,7 +541,7 @@ class ExamDetail(APIView):
     def _get(self, request, pk):
         try:
             return Exam.objects.get(id=pk, user_id=uid(request))
-        except (DoesNotExist, MongoValidationError, Exception):
+        except (DoesNotExist, MongoValidationError):
             return None
 
     def put(self, request, pk):
